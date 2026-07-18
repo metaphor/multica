@@ -123,6 +123,8 @@ import type {
   GitHubPullRequest,
   ListGitHubInstallationsResponse,
   GitHubConnectResponse,
+  GitLabConnection,
+  GitLabConnectionListResponse,
   ListLarkInstallationsResponse,
   BeginLarkInstallResponse,
   LarkInstallStatusResponse,
@@ -2656,6 +2658,73 @@ export class ApiClient {
 
   async listIssuePullRequests(issueId: string): Promise<{ pull_requests: GitHubPullRequest[] }> {
     return this.fetch(`/api/issues/${issueId}/pull-requests`);
+  }
+
+  // GitLab integration
+  async listGitLabConnections(workspaceId: string): Promise<GitLabConnectionListResponse> {
+    return this.fetch(`/api/workspaces/${workspaceId}/gitlab/connections`);
+  }
+
+  async createGitLabConnection(
+    workspaceId: string,
+    data: { instance_url: string; access_token: string; display_name?: string },
+  ): Promise<GitLabConnection> {
+    return this.fetch(`/api/workspaces/${workspaceId}/gitlab/connections`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteGitLabConnection(workspaceId: string, connectionId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/gitlab/connections/${connectionId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async addGitLabHookTarget(
+    workspaceId: string,
+    connectionId: string,
+    data: { target_type: "project" | "group"; target_path: string },
+  ): Promise<GitLabConnection> {
+    return this.fetch(`/api/workspaces/${workspaceId}/gitlab/connections/${connectionId}/hooks`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async removeGitLabHookTarget(
+    workspaceId: string,
+    connectionId: string,
+    data: { target_type: "project" | "group"; target_path: string },
+  ): Promise<GitLabConnection> {
+    // The backend route is DELETE .../hooks and decodes the target from the
+    // JSON body; this.fetch passes RequestInit straight through, so a DELETE
+    // body works (same pattern as removeSquadMembers).
+    return this.fetch(`/api/workspaces/${workspaceId}/gitlab/connections/${connectionId}/hooks`, {
+      method: "DELETE",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateGitLabConnectionToken(
+    workspaceId: string,
+    connectionId: string,
+    accessToken: string,
+  ): Promise<GitLabConnection> {
+    return this.fetch(`/api/workspaces/${workspaceId}/gitlab/connections/${connectionId}/token`, {
+      method: "PUT",
+      body: JSON.stringify({ access_token: accessToken }),
+    });
+  }
+
+  async rotateGitLabConnectionSecret(
+    workspaceId: string,
+    connectionId: string,
+  ): Promise<GitLabConnection> {
+    return this.fetch(
+      `/api/workspaces/${workspaceId}/gitlab/connections/${connectionId}/rotate-secret`,
+      { method: "POST" },
+    );
   }
 
   // Lark integration

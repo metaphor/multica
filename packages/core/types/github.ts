@@ -31,6 +31,10 @@ export interface GitHubInstallation {
 export interface GitHubPullRequest {
   id: string;
   workspace_id: string;
+  /** Which forge produced this row. Present on every backend response since
+   * the GitLab integration landed (both GitHub PRs and GitLab MRs share this
+   * shape and this table). */
+  provider: "github" | "gitlab";
   repo_owner: string;
   repo_name: string;
   number: number;
@@ -75,4 +79,38 @@ export interface GitHubConnectResponse {
   /** The GitHub App install URL the browser should open. Empty when `configured` is false. */
   url?: string;
   configured: boolean;
+}
+
+/** One registered webhook target on a GitLab connection, mirrored from the
+ * connection's `hooks` JSONB column (server `hookRecord`). */
+export interface GitLabHookTarget {
+  target_type: "project" | "group";
+  /** Full GitLab path of the project or group (e.g. "acme/backend"). */
+  target_path: string;
+  hook_id: number;
+  url: string;
+  created_at: string;
+  last_error: string | null;
+}
+
+export interface GitLabConnection {
+  id: string;
+  instance_url: string;
+  display_name: string;
+  account_login: string;
+  hooks: GitLabHookTarget[];
+  created_at: string;
+}
+
+export interface GitLabConnectionListResponse {
+  connections: GitLabConnection[];
+  /** Whether the deployment has GitLab credentials configured
+   * (MULTICA_GITLAB_SECRET_KEY set). When false, the Connect button is
+   * hidden / disabled. */
+  configured: boolean;
+  /** Whether the caller can connect / disconnect / manage connections.
+   * Non-admin members get `false`. Older backends predating the GitLab
+   * integration omit the field; treat absence as `false` for read-only
+   * safety. */
+  can_manage?: boolean;
 }

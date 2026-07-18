@@ -126,6 +126,9 @@ export type {
   GitHubPullRequestState,
   ListGitHubInstallationsResponse,
   GitHubConnectResponse,
+  GitLabHookTarget,
+  GitLabConnection,
+  GitLabConnectionListResponse,
 } from "./github";
 export type {
   LarkInstallation,

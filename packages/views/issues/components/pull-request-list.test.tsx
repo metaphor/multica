@@ -30,6 +30,7 @@ function makePR(overrides: Partial<GitHubPullRequest> = {}): GitHubPullRequest {
   return {
     id: "pr-1",
     workspace_id: "ws-1",
+    provider: "github",
     repo_owner: "acme",
     repo_name: "widget",
     number: 1,
