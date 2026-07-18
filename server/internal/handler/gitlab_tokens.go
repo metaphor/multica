@@ -51,7 +51,7 @@ func (h *Handler) UpdateGitLabConnectionToken(w http.ResponseWriter, r *http.Req
 
 	if !h.isGitLabConfigured() {
 		writeError(w, http.StatusServiceUnavailable,
-			"GitLab integration is not configured (MULTICA_GITLAB_SECRET_KEY is not set)")
+			"GitLab integration is not configured (MULTICA_GITLAB_SECRET_KEY is not set or is invalid — expected base64-encoded 32 bytes)")
 		return
 	}
 
@@ -152,7 +152,7 @@ func (h *Handler) RotateGitLabConnectionSecret(w http.ResponseWriter, r *http.Re
 
 	if !h.isGitLabConfigured() {
 		writeError(w, http.StatusServiceUnavailable,
-			"GitLab integration is not configured (MULTICA_GITLAB_SECRET_KEY is not set)")
+			"GitLab integration is not configured (MULTICA_GITLAB_SECRET_KEY is not set or is invalid — expected base64-encoded 32 bytes)")
 		return
 	}
 

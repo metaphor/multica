@@ -553,10 +553,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 	// GitLab integration. Gated by MULTICA_GITLAB_SECRET_KEY, the at-rest
 	// encryption master key for personal access tokens and webhook secrets.
-	// When the key is absent the GitLab connection handlers return 503 with a
-	// clear message (MULTICA_GITLAB_SECRET_KEY is not set); the rest of the
-	// server starts unaffected so self-host deployments that have not opted in
-	// to GitLab continue normally. Webhook verification does NOT depend on the
+	// The key must be a base64-encoded 32-byte value (generate:
+	// `openssl rand -base64 32`). When the key is absent or malformed the
+	// GitLab connection handlers return 503; the rest of the server starts
+	// unaffected so self-host deployments that have not opted in to GitLab
+	// continue normally. Webhook verification does NOT depend on the
 	// secretbox key — it uses only the cleartext secret hash, so a key-absent
 	// deployment that somehow has connection rows (e.g. migrated data) still
 	// processes inbound webhooks correctly.
@@ -569,7 +570,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			slog.Info("gitlab integration enabled")
 		}
 	} else {
-		slog.Info("gitlab integration disabled (MULTICA_GITLAB_SECRET_KEY not set)")
+		slog.Info("gitlab integration disabled", "reason", err)
 	}
 
 	// Composio integration (MUL-3720). Gated by COMPOSIO_API_KEY plus the

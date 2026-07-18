@@ -61,7 +61,7 @@ func (h *Handler) AddGitLabHookTarget(w http.ResponseWriter, r *http.Request) {
 
 	if !h.isGitLabConfigured() {
 		writeError(w, http.StatusServiceUnavailable,
-			"GitLab integration is not configured (MULTICA_GITLAB_SECRET_KEY is not set)")
+			"GitLab integration is not configured (MULTICA_GITLAB_SECRET_KEY is not set or is invalid — expected base64-encoded 32 bytes)")
 		return
 	}
 
@@ -223,7 +223,7 @@ func (h *Handler) RemoveGitLabHookTarget(w http.ResponseWriter, r *http.Request)
 
 	if !h.isGitLabConfigured() {
 		writeError(w, http.StatusServiceUnavailable,
-			"GitLab integration is not configured (MULTICA_GITLAB_SECRET_KEY is not set)")
+			"GitLab integration is not configured (MULTICA_GITLAB_SECRET_KEY is not set or is invalid — expected base64-encoded 32 bytes)")
 		return
 	}
 
