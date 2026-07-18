@@ -979,6 +979,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
 					r.Post("/gitlab/connections", h.CreateGitLabConnection)
 					r.Delete("/gitlab/connections/{connectionID}", h.DeleteGitLabConnection)
+					r.Post("/gitlab/connections/{connectionID}/hooks", h.AddGitLabHookTarget)
+					r.Delete("/gitlab/connections/{connectionID}/hooks", h.RemoveGitLabHookTarget)
 				})
 			})
 		})
