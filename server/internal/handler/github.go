@@ -88,9 +88,10 @@ type GitHubPullRequestResponse struct {
 	// `pull_request` webhook payload. Legacy rows that pre-date this
 	// field default to 0; the frontend treats total == 0 as "unknown"
 	// and hides the stats row.
-	Additions    int32 `json:"additions"`
-	Deletions    int32 `json:"deletions"`
-	ChangedFiles int32 `json:"changed_files"`
+	Additions    int32  `json:"additions"`
+	Deletions    int32  `json:"deletions"`
+	ChangedFiles int32  `json:"changed_files"`
+	Provider     string `json:"provider"`
 }
 
 type GitHubConnectResponse struct {
@@ -149,6 +150,7 @@ func githubPullRequestToResponse(p db.GithubPullRequest) GitHubPullRequestRespon
 		Additions:        p.Additions,
 		Deletions:        p.Deletions,
 		ChangedFiles:     p.ChangedFiles,
+		Provider:         p.Provider,
 	}
 }
 
@@ -177,6 +179,7 @@ func issuePullRequestRowToResponse(p db.ListPullRequestsByIssueRow) GitHubPullRe
 		Additions:        p.Additions,
 		Deletions:        p.Deletions,
 		ChangedFiles:     p.ChangedFiles,
+		Provider:         p.Provider,
 	}
 }
 

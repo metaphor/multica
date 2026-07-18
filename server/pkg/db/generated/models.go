@@ -462,15 +462,22 @@ type Feedback struct {
 }
 
 type GithubInstallation struct {
-	ID               pgtype.UUID        `json:"id"`
-	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
-	InstallationID   int64              `json:"installation_id"`
-	AccountLogin     string             `json:"account_login"`
-	AccountType      string             `json:"account_type"`
-	AccountAvatarUrl pgtype.Text        `json:"account_avatar_url"`
-	ConnectedByID    pgtype.UUID        `json:"connected_by_id"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	ID                      pgtype.UUID        `json:"id"`
+	WorkspaceID             pgtype.UUID        `json:"workspace_id"`
+	InstallationID          int64              `json:"installation_id"`
+	AccountLogin            string             `json:"account_login"`
+	AccountType             string             `json:"account_type"`
+	AccountAvatarUrl        pgtype.Text        `json:"account_avatar_url"`
+	ConnectedByID           pgtype.UUID        `json:"connected_by_id"`
+	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
+	Provider                string             `json:"provider"`
+	InstanceUrl             pgtype.Text        `json:"instance_url"`
+	DisplayName             pgtype.Text        `json:"display_name"`
+	AccessTokenCiphertext   []byte             `json:"access_token_ciphertext"`
+	WebhookSecretHash       []byte             `json:"webhook_secret_hash"`
+	WebhookSecretCiphertext []byte             `json:"webhook_secret_ciphertext"`
+	Hooks                   []byte             `json:"hooks"`
 }
 
 type GithubPendingCheckSuite struct {
@@ -486,6 +493,7 @@ type GithubPendingCheckSuite struct {
 	Status         string             `json:"status"`
 	SuiteUpdatedAt pgtype.Timestamptz `json:"suite_updated_at"`
 	ReceivedAt     pgtype.Timestamptz `json:"received_at"`
+	Provider       string             `json:"provider"`
 }
 
 type GithubPendingInstallation struct {
@@ -521,6 +529,7 @@ type GithubPullRequest struct {
 	Additions       int32              `json:"additions"`
 	Deletions       int32              `json:"deletions"`
 	ChangedFiles    int32              `json:"changed_files"`
+	Provider        string             `json:"provider"`
 }
 
 type GithubPullRequestCheckSuite struct {

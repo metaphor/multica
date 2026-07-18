@@ -4,7 +4,7 @@
 
 -- name: ListGitHubInstallationsByWorkspace :many
 SELECT * FROM github_installation
-WHERE workspace_id = $1
+WHERE workspace_id = $1 AND provider = 'github'
 ORDER BY created_at ASC;
 
 -- name: ListGitHubInstallationsByInstallationID :many
@@ -12,7 +12,7 @@ ORDER BY created_at ASC;
 -- every binding and fans the event out to each bound workspace. Ordered oldest
 -- first so processing is deterministic and replay-stable.
 SELECT * FROM github_installation
-WHERE installation_id = $1
+WHERE installation_id = $1 AND provider = 'github'
 ORDER BY created_at ASC, id ASC;
 
 -- name: GetGitHubInstallationByID :one
@@ -21,9 +21,9 @@ WHERE id = $1;
 
 -- name: CreateGitHubInstallation :one
 INSERT INTO github_installation (
-    workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id
+    workspace_id, provider, installation_id, account_login, account_type, account_avatar_url, connected_by_id
 ) VALUES (
-    $1, $2, $3, $4, sqlc.narg('account_avatar_url'), sqlc.narg('connected_by_id')
+    $1, 'github', $2, $3, $4, sqlc.narg('account_avatar_url'), sqlc.narg('connected_by_id')
 )
 ON CONFLICT (workspace_id, installation_id) DO UPDATE SET
     account_login = EXCLUDED.account_login,
@@ -40,7 +40,7 @@ DELETE FROM github_installation WHERE id = $1 AND workspace_id = $2;
 -- GitHub-side uninstall/suspend removes trust in the installation entirely, so
 -- drop every workspace binding. Returns one row per deleted binding so the
 -- handler can broadcast to each affected workspace.
-DELETE FROM github_installation WHERE installation_id = $1
+DELETE FROM github_installation WHERE installation_id = $1 AND provider = 'github'
 RETURNING id, workspace_id;
 
 -- name: UpdateGitHubInstallationAccountByInstallationID :many
@@ -52,7 +52,7 @@ SET account_login = $2,
     account_type = $3,
     account_avatar_url = sqlc.narg('account_avatar_url'),
     updated_at = now()
-WHERE installation_id = $1
+WHERE installation_id = $1 AND provider = 'github'
 RETURNING *;
 
 -- name: UpsertPendingGitHubInstallation :one
@@ -90,19 +90,19 @@ SELECT * FROM github_pending_installation WHERE installation_id = $1
 --      information that GitHub only re-computes lazily.
 -- INSERT path always writes the incoming value (NULL acceptable for a new row).
 INSERT INTO github_pull_request (
-    workspace_id, installation_id, repo_owner, repo_name, pr_number,
+    workspace_id, provider, installation_id, repo_owner, repo_name, pr_number,
     title, state, html_url, branch, author_login, author_avatar_url,
     merged_at, closed_at, pr_created_at, pr_updated_at,
     head_sha, mergeable_state,
     additions, deletions, changed_files
 ) VALUES (
-    $1, $2, $3, $4, $5,
+    $1, 'github', $2, $3, $4, $5,
     $6, $7, $8, sqlc.narg('branch'), sqlc.narg('author_login'), sqlc.narg('author_avatar_url'),
     sqlc.narg('merged_at'), sqlc.narg('closed_at'), $9, $10,
     $11, sqlc.narg('mergeable_state'),
     $12, $13, $14
 )
-ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
+ON CONFLICT (workspace_id, provider, repo_owner, repo_name, pr_number) DO UPDATE SET
     installation_id = EXCLUDED.installation_id,
     title = EXCLUDED.title,
     state = EXCLUDED.state,
@@ -127,7 +127,7 @@ RETURNING *;
 
 -- name: GetGitHubPullRequest :one
 SELECT * FROM github_pull_request
-WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4;
+WHERE workspace_id = $1 AND provider = 'github' AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4;
 
 -- name: ListPullRequestsByIssue :many
 -- Returns the issue's linked PRs with the aggregated check-suite counts for
@@ -171,7 +171,7 @@ checks AS (
     GROUP BY pr_id
 )
 SELECT
-    pr.id, pr.workspace_id, pr.installation_id, pr.repo_owner, pr.repo_name,
+    pr.id, pr.workspace_id, pr.installation_id, pr.provider, pr.repo_owner, pr.repo_name,
     pr.pr_number, pr.title, pr.state, pr.html_url, pr.branch, pr.author_login,
     pr.author_avatar_url, pr.merged_at, pr.closed_at, pr.pr_created_at,
     pr.pr_updated_at, pr.head_sha, pr.mergeable_state,
@@ -268,13 +268,13 @@ WHERE EXCLUDED.updated_at >= github_pull_request_check_suite.updated_at;
 -- suite_updated_at guard mirrors UpsertPullRequestCheckSuite so an older
 -- event arriving after a newer one cannot overwrite the newer payload.
 INSERT INTO github_pending_check_suite (
-    workspace_id, installation_id, repo_owner, repo_name, pr_number,
+    workspace_id, provider, installation_id, repo_owner, repo_name, pr_number,
     suite_id, head_sha, app_id, conclusion, status, suite_updated_at
 ) VALUES (
-    $1, $2, $3, $4, $5,
+    $1, 'github', $2, $3, $4, $5,
     $6, $7, $8, sqlc.narg('conclusion'), $9, $10
 )
-ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number, suite_id) DO UPDATE SET
+ON CONFLICT (workspace_id, provider, repo_owner, repo_name, pr_number, suite_id) DO UPDATE SET
     installation_id  = EXCLUDED.installation_id,
     head_sha         = EXCLUDED.head_sha,
     app_id           = EXCLUDED.app_id,
@@ -291,6 +291,7 @@ WHERE EXCLUDED.suite_updated_at >= github_pending_check_suite.suite_updated_at;
 -- handlers racing on the same PR can't double-apply the same row.
 DELETE FROM github_pending_check_suite
 WHERE workspace_id = $1
+  AND provider = 'github'
   AND repo_owner   = $2
   AND repo_name    = $3
   AND pr_number    = $4
@@ -329,3 +330,185 @@ ON CONFLICT (issue_id, pull_request_id) DO UPDATE SET
 -- name: UnlinkIssueFromPullRequest :exec
 DELETE FROM issue_pull_request
 WHERE issue_id = $1 AND pull_request_id = $2;
+
+-- =====================
+-- GitLab Connection
+-- =====================
+
+-- name: InsertGitLabConnection :one
+INSERT INTO github_installation (
+    workspace_id, provider, installation_id, account_login, account_type, display_name,
+    instance_url, access_token_ciphertext, webhook_secret_hash, webhook_secret_ciphertext, hooks
+) VALUES (
+    $1, 'gitlab', 0, $2, 'User', $3,
+    $4, $5, $6, $7, $8
+)
+RETURNING *;
+
+-- name: GetGitLabConnectionBySecretHash :one
+SELECT * FROM github_installation
+WHERE webhook_secret_hash = $1 AND provider = 'gitlab';
+
+-- name: ListGitLabConnectionsByWorkspace :many
+SELECT * FROM github_installation
+WHERE workspace_id = $1 AND provider = 'gitlab'
+ORDER BY created_at ASC;
+
+-- name: GetGitLabConnectionByID :one
+SELECT * FROM github_installation
+WHERE id = $1 AND workspace_id = $2 AND provider = 'gitlab';
+
+-- name: UpdateGitLabConnectionHooks :exec
+UPDATE github_installation
+SET hooks = $3, updated_at = now()
+WHERE id = $1 AND workspace_id = $2 AND provider = 'gitlab';
+
+-- name: UpdateGitLabConnectionToken :exec
+UPDATE github_installation
+SET access_token_ciphertext = $3, updated_at = now()
+WHERE id = $1 AND workspace_id = $2 AND provider = 'gitlab';
+
+-- name: UpdateGitLabConnectionSecret :exec
+UPDATE github_installation
+SET webhook_secret_hash = $3, webhook_secret_ciphertext = $4, updated_at = now()
+WHERE id = $1 AND workspace_id = $2 AND provider = 'gitlab';
+
+-- name: DeleteGitLabConnection :exec
+DELETE FROM github_installation
+WHERE id = $1 AND workspace_id = $2 AND provider = 'gitlab';
+
+-- =====================
+-- GitLab Merge Request (mirrors UpsertGitHubPullRequest)
+-- =====================
+
+-- name: UpsertGitLabMergeRequest :one
+-- Mirrors UpsertGitHubPullRequest with provider='gitlab' and installation_id=0.
+-- The mergeable_state three-state CASE is identical to the GitHub upsert.
+INSERT INTO github_pull_request (
+    workspace_id, provider, installation_id, repo_owner, repo_name, pr_number,
+    title, state, html_url, branch, author_login, author_avatar_url,
+    merged_at, closed_at, pr_created_at, pr_updated_at,
+    head_sha, mergeable_state,
+    additions, deletions, changed_files
+) VALUES (
+    $1, 'gitlab', 0, $2, $3, $4,
+    $5, $6, $7, sqlc.narg('branch'), sqlc.narg('author_login'), sqlc.narg('author_avatar_url'),
+    sqlc.narg('merged_at'), sqlc.narg('closed_at'), $8, $9,
+    $10, sqlc.narg('mergeable_state'),
+    $11, $12, $13
+)
+ON CONFLICT (workspace_id, provider, repo_owner, repo_name, pr_number) DO UPDATE SET
+    installation_id = EXCLUDED.installation_id,
+    title = EXCLUDED.title,
+    state = EXCLUDED.state,
+    html_url = EXCLUDED.html_url,
+    branch = EXCLUDED.branch,
+    author_login = EXCLUDED.author_login,
+    author_avatar_url = EXCLUDED.author_avatar_url,
+    merged_at = EXCLUDED.merged_at,
+    closed_at = EXCLUDED.closed_at,
+    pr_updated_at = EXCLUDED.pr_updated_at,
+    head_sha = EXCLUDED.head_sha,
+    mergeable_state = CASE
+        WHEN COALESCE(sqlc.narg('clear_mergeable_state')::boolean, FALSE) THEN NULL
+        WHEN EXCLUDED.mergeable_state IS NOT NULL THEN EXCLUDED.mergeable_state
+        ELSE github_pull_request.mergeable_state
+    END,
+    additions     = EXCLUDED.additions,
+    deletions     = EXCLUDED.deletions,
+    changed_files = EXCLUDED.changed_files,
+    updated_at = now()
+RETURNING *;
+
+-- =====================
+-- GitLab Pipeline (writes github_pull_request_check_suite)
+-- =====================
+
+-- name: UpsertGitLabPipeline :exec
+-- Same guard as UpsertPullRequestCheckSuite: prevents an older event from
+-- overwriting a newer one. Status priority: completed > in_progress > anything
+-- else.
+INSERT INTO github_pull_request_check_suite (
+    pr_id, suite_id, head_sha, app_id, conclusion, status, updated_at
+) VALUES (
+    $1, $2, $3, $4, sqlc.narg('conclusion'), $5, $6
+)
+ON CONFLICT (pr_id, suite_id) DO UPDATE SET
+    head_sha   = EXCLUDED.head_sha,
+    app_id     = EXCLUDED.app_id,
+    conclusion = EXCLUDED.conclusion,
+    status     = EXCLUDED.status,
+    updated_at = EXCLUDED.updated_at
+WHERE EXCLUDED.updated_at > github_pull_request_check_suite.updated_at
+   OR (EXCLUDED.updated_at = github_pull_request_check_suite.updated_at AND
+       CASE EXCLUDED.status
+           WHEN 'completed' THEN 3
+           WHEN 'in_progress' THEN 2
+           ELSE 1
+       END >= CASE github_pull_request_check_suite.status
+           WHEN 'completed' THEN 3
+           WHEN 'in_progress' THEN 2
+           ELSE 1
+       END);
+
+-- =====================
+-- GitLab pending pipeline (out-of-order arrival stash)
+-- =====================
+
+-- name: UpsertPendingGitLabPipeline :exec
+-- Mirrors UpsertPendingCheckSuite with provider='gitlab'. Stashes pipeline
+-- events whose MR row is not yet mirrored.
+INSERT INTO github_pending_check_suite (
+    workspace_id, provider, installation_id, repo_owner, repo_name, pr_number,
+    suite_id, head_sha, app_id, conclusion, status, suite_updated_at
+) VALUES (
+    $1, 'gitlab', 0, $2, $3, $4,
+    $5, $6, $7, sqlc.narg('conclusion'), $8, $9
+)
+ON CONFLICT (workspace_id, provider, repo_owner, repo_name, pr_number, suite_id) DO UPDATE SET
+    installation_id  = EXCLUDED.installation_id,
+    head_sha         = EXCLUDED.head_sha,
+    app_id           = EXCLUDED.app_id,
+    conclusion       = EXCLUDED.conclusion,
+    status           = EXCLUDED.status,
+    suite_updated_at = EXCLUDED.suite_updated_at,
+    received_at      = now()
+WHERE EXCLUDED.suite_updated_at >= github_pending_check_suite.suite_updated_at;
+
+-- =====================
+-- GitLab lookup / drain / cleanup
+-- =====================
+
+-- name: GetLatestOpenGitLabMRByHeadSha :one
+SELECT * FROM github_pull_request
+WHERE workspace_id = $1
+  AND provider = 'gitlab'
+  AND repo_owner = $2
+  AND repo_name = $3
+  AND head_sha = $4
+  AND state = 'open'
+ORDER BY updated_at DESC
+LIMIT 1;
+
+-- name: DrainPendingGitLabPipelinesForMR :many
+-- Atomically reads + deletes all pending pipeline rows for the given MR.
+-- The pr_number=0 fallback handles the stash row inserted before we knew the
+-- MR iid; rows with pr_number=0 AND an unknown head_sha are sticky and will
+-- be cleaned up by DeleteStalePendingCheckSuites.
+-- Comment: rows with pr_number=0 but a different head_sha are permanent
+-- no-ops: (pr_number=$4) never matches them and (pr_number=0 AND head_sha=$5)
+-- only matches the actual stash row for this MR's head.
+DELETE FROM github_pending_check_suite
+WHERE workspace_id = $1
+  AND provider = 'gitlab'
+  AND repo_owner = $2
+  AND repo_name = $3
+  AND (pr_number = $4 OR (pr_number = 0 AND head_sha = $5))
+RETURNING *;
+
+-- name: DeleteStalePendingCheckSuites :exec
+-- Purge check_suite/pipeline stash rows older than 7 days across both
+-- providers. Handles the pr_number=0 fallback rows from DrainPendingGitLabPipelinesForMR
+-- that never got a real iid assigned.
+DELETE FROM github_pending_check_suite
+WHERE received_at < now() - interval '7 days';
