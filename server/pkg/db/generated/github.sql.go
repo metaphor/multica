@@ -418,6 +418,55 @@ func (q *Queries) GetGitLabConnectionBySecretHash(ctx context.Context, webhookSe
 	return i, err
 }
 
+const getGitLabMergeRequest = `-- name: GetGitLabMergeRequest :one
+SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, provider FROM github_pull_request
+WHERE workspace_id = $1 AND provider = 'gitlab' AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4
+`
+
+type GetGitLabMergeRequestParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RepoOwner   string      `json:"repo_owner"`
+	RepoName    string      `json:"repo_name"`
+	PrNumber    int32       `json:"pr_number"`
+}
+
+func (q *Queries) GetGitLabMergeRequest(ctx context.Context, arg GetGitLabMergeRequestParams) (GithubPullRequest, error) {
+	row := q.db.QueryRow(ctx, getGitLabMergeRequest,
+		arg.WorkspaceID,
+		arg.RepoOwner,
+		arg.RepoName,
+		arg.PrNumber,
+	)
+	var i GithubPullRequest
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstallationID,
+		&i.RepoOwner,
+		&i.RepoName,
+		&i.PrNumber,
+		&i.Title,
+		&i.State,
+		&i.HtmlUrl,
+		&i.Branch,
+		&i.AuthorLogin,
+		&i.AuthorAvatarUrl,
+		&i.MergedAt,
+		&i.ClosedAt,
+		&i.PrCreatedAt,
+		&i.PrUpdatedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.HeadSha,
+		&i.MergeableState,
+		&i.Additions,
+		&i.Deletions,
+		&i.ChangedFiles,
+		&i.Provider,
+	)
+	return i, err
+}
+
 const getIssuePullRequestCloseAggregate = `-- name: GetIssuePullRequestCloseAggregate :one
 SELECT
     COALESCE(SUM(CASE WHEN pr.state IN ('open', 'draft') THEN 1 ELSE 0 END), 0)::bigint AS open_count,

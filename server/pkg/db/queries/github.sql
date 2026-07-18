@@ -420,6 +420,10 @@ ON CONFLICT (workspace_id, provider, repo_owner, repo_name, pr_number) DO UPDATE
     updated_at = now()
 RETURNING *;
 
+-- name: GetGitLabMergeRequest :one
+SELECT * FROM github_pull_request
+WHERE workspace_id = $1 AND provider = 'gitlab' AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4;
+
 -- =====================
 -- GitLab Pipeline (writes github_pull_request_check_suite)
 -- =====================

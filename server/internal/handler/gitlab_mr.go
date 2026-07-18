@@ -144,7 +144,39 @@ func (h *Handler) handleGitLabMergeRequestEvent(ctx context.Context, conn db.Git
 		return err
 	}
 
-	// 9. T9: drain pending pipelines here
+	// 9. Drain pending pipeline events that arrived before the MR row was
+	//    mirrored. Mirrors replayPendingCheckSuitesForPR in github.go.
+	//    Drain is a DELETE...RETURNING: no-op empty set, atomic drain
+	//    when rows exist. Must run before auto-link (step 10) so the
+	//    CI row lands before the link lookup — consistent with GitHub's
+	//    order (check_suite before PR→issue link).
+	pending, err := h.Queries.DrainPendingGitLabPipelinesForMR(ctx, db.DrainPendingGitLabPipelinesForMRParams{
+		WorkspaceID: wsID,
+		RepoOwner:   repoOwner,
+		RepoName:    repoName,
+		PrNumber:    int32(oa.IID),
+		HeadSha:     headSHA,
+	})
+	if err != nil {
+		slog.Warn("gitlab: drain pending pipelines failed",
+			"err", err, "mr", oa.IID)
+	} else {
+		for _, row := range pending {
+			if err := h.Queries.UpsertGitLabPipeline(ctx, db.UpsertGitLabPipelineParams{
+				PrID:       pr.ID,
+				SuiteID:    row.SuiteID,
+				HeadSha:    row.HeadSha,
+				AppID:      -1,
+				Status:     row.Status,
+				Conclusion: row.Conclusion,
+				UpdatedAt:  row.SuiteUpdatedAt,
+			}); err != nil {
+				slog.Warn("gitlab: replay pending pipeline failed",
+					"err", err, "mr_id", uuidToString(pr.ID),
+					"pipeline_id", row.SuiteID)
+			}
+		}
+	}
 
 	workspaceID := uuidToString(wsID)
 
