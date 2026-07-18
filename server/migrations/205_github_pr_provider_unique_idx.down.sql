@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS github_pull_request_ws_provider_repo_pr;
