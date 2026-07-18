@@ -144,21 +144,180 @@ func (h *Handler) handleGitLabMergeRequestEvent(ctx context.Context, conn db.Git
 		return err
 	}
 
-	// 9. Reserved call points for downstream tasks.
-	// T8: auto-link here (identifier extraction + issue linking)
-	_ = pr // silence unused until T8 wires it
-	// T9: drain pending pipelines here
+	// 9. T9: drain pending pipelines here
 
-	// 10. Broadcast pull_request:updated.
 	workspaceID := uuidToString(wsID)
+
+	// 10. Auto-link: scan title/body/branch for issue identifiers, look them
+	// up in this workspace, attach the link rows. Idempotent (ON CONFLICT
+	// upserts the close_intent flag — see LinkIssueToPullRequest) so
+	// re-firing the webhook doesn't duplicate.
+	//
+	// Mirrors the GitHub auto-link path (mirrorPullRequestForWorkspace) but
+	// gated by gitlab_enabled / gitlab_auto_link_mrs_enabled workspace
+	// settings, defaulting to ON to match GitHub's opt-out posture.
+	linkedIssueIDs := make([]string, 0)
+	if h.workspaceAutoLinkMRsEnabled(ctx, wsID) {
+		description := extractDescription(oa.Description)
+		idents := extractIdentifiers(oa.Title, description, oa.SourceBranch)
+
+		// closingIdents is the subset of identifiers that this MR explicitly
+		// declared via a closing keyword ("Closes/Fixes/Resolves HAN-X").
+		// Linking still happens for every mention (idents above), but the
+		// link row's close_intent column — and therefore whether the
+		// auto-advance gate eventually fires — is only set for keyword-
+		// declared identifiers.
+		closingIdents := map[string]struct{}{}
+		for _, c := range extractClosingIdentifiers(oa.Title, description) {
+			closingIdents[c] = struct{}{}
+		}
+
+		// qualifyingIdents are the identifiers that genuinely tie this MR
+		// to an issue: a title prefix, a branch-name reference, or a body
+		// closing keyword. Any identifier linked but NOT in this set was
+		// matched only by a bare mention in the MR body — flagged
+		// reference_only and hidden from the issue's PR list.
+		qualifyingIdents := map[string]struct{}{}
+		for _, id := range extractIdentifiers(oa.Title, oa.SourceBranch) {
+			qualifyingIdents[id] = struct{}{}
+		}
+		for c := range closingIdents {
+			qualifyingIdents[c] = struct{}{}
+		}
+
+		// close_intent should follow the MR title/body while the MR is
+		// still editable before its terminal close event. Once the MR has
+		// reached a terminal state, later edit/update webhooks must not
+		// rewrite the merge-time close decision.
+		preserveCloseIntent := oa.Action != "close" && (state == "merged" || state == "closed")
+
+		prefix := h.getIssuePrefix(ctx, wsID)
+
+		// reevalIssues collects each issue whose link row we just touched so
+		// we can re-run the auto-advance gate against the persisted aggregate
+		// after every link upsert in this event.
+		reevalIssues := make([]db.Issue, 0, len(idents))
+		for _, id := range idents {
+			issue, ok := h.lookupIssueByIdentifier(ctx, wsID, prefix, id)
+			if !ok {
+				continue
+			}
+			_, declared := closingIdents[id]
+			closeIntent := declared && !preserveCloseIntent
+			_, qualifies := qualifyingIdents[id]
+			referenceOnly := !qualifies
+			if err := h.Queries.LinkIssueToPullRequest(ctx, db.LinkIssueToPullRequestParams{
+				IssueID:             issue.ID,
+				PullRequestID:       pr.ID,
+				CloseIntent:         closeIntent,
+				ReferenceOnly:       referenceOnly,
+				PreserveCloseIntent: preserveCloseIntent,
+				LinkedByType:        strToText("system"),
+				LinkedByID:          pgtype.UUID{},
+			}); err != nil {
+				slog.Warn("gitlab: link failed", "err", err)
+				continue
+			}
+			linkedIssueIDs = append(linkedIssueIDs, uuidToString(issue.ID))
+			reevalIssues = append(reevalIssues, issue)
+		}
+
+		// A terminal MR event (`merged` or `closed`) may be the moment the
+		// last in-flight sibling resolves. We re-evaluate every issue we
+		// just linked once both the MR row and the link row are persisted,
+		// so the aggregate query sees the freshest state.
+		if state == "merged" || state == "closed" {
+			for _, issue := range reevalIssues {
+				if issue.Status == "done" || issue.Status == "cancelled" {
+					continue
+				}
+				counts, err := h.Queries.GetIssuePullRequestCloseAggregate(ctx, issue.ID)
+				if err != nil {
+					slog.Warn("gitlab: count linked pr states failed", "err", err, "issue_id", uuidToString(issue.ID))
+					continue
+				}
+				if counts.OpenCount == 0 && counts.MergedWithCloseIntentCount > 0 {
+					// advanceIssueToDone hardcodes "github_pr_merged" as
+					// the event source. That source string has no runtime
+					// code consumers (it only appears in issue timeline
+					// copy), so mirroring its exact logic inline with
+					// "gitlab_mr_merged" for timeline fidelity is safe
+					// and self-contained. The underlying status transition
+					// + parent notification + WS broadcast is identical.
+					updated, err := h.Queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+						ID:          issue.ID,
+						Status:      "done",
+						WorkspaceID: issue.WorkspaceID,
+					})
+					if err != nil {
+						slog.Warn("gitlab: advance issue to done failed", "err", err)
+						continue
+					}
+					h.notifyParentOfChildDone(ctx, issue, updated)
+					prefix := h.getIssuePrefix(ctx, issue.WorkspaceID)
+					resp := issueToResponse(updated, prefix)
+					h.publish(protocol.EventIssueUpdated, workspaceID, "system", "", map[string]any{
+						"issue":          resp,
+						"status_changed": true,
+						"prev_status":    issue.Status,
+						"creator_type":   issue.CreatorType,
+						"creator_id":     uuidToString(issue.CreatorID),
+						"source":         "gitlab_mr_merged",
+					})
+				}
+			}
+		}
+	}
+
+	// 11. Broadcast pull_request:updated.
 	resp := gitLabMRToResponse(pr)
-	linkedIssueIDs := make([]string, 0) // T8 will populate
 	h.publish(protocol.EventPullRequestUpdated, workspaceID, "system", "", map[string]any{
 		"pull_request":     resp,
 		"linked_issue_ids": linkedIssueIDs,
 	})
 
 	return nil
+}
+
+// workspaceAutoLinkMRsEnabled reports whether the workspace allows the
+// GitLab webhook to create issue ↔ MR link rows. Defaults to true so that
+// workspaces predating the feature keep the historical "auto-link on"
+// behavior, and short-circuits to false whenever the master GitLab switch
+// is explicitly off — mirroring the precedence used on the client side and
+// the equivalent GitHub gate (workspaceAutoLinkPRsEnabled).
+func (h *Handler) workspaceAutoLinkMRsEnabled(ctx context.Context, workspaceID pgtype.UUID) bool {
+	ws, err := h.Queries.GetWorkspace(ctx, workspaceID)
+	if err != nil || len(ws.Settings) == 0 {
+		return true
+	}
+	var s struct {
+		GitLabEnabled           *bool `json:"gitlab_enabled"`
+		GitLabAutoLinkMRsEnabled *bool `json:"gitlab_auto_link_mrs_enabled"`
+	}
+	if err := json.Unmarshal(ws.Settings, &s); err != nil {
+		return true
+	}
+	if s.GitLabEnabled != nil && !*s.GitLabEnabled {
+		return false
+	}
+	if s.GitLabAutoLinkMRsEnabled == nil {
+		return true
+	}
+	return *s.GitLabAutoLinkMRsEnabled
+}
+
+// extractDescription extracts a plain string from a GitLab MR
+// description field, which arrives as *json.RawMessage and may be
+// a JSON string, null, or absent.
+func extractDescription(raw *json.RawMessage) string {
+	if raw == nil {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(*raw, &s); err != nil {
+		return ""
+	}
+	return s
 }
 
 // ── State mapping ───────────────────────────────────────────────────────────
