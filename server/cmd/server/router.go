@@ -551,6 +551,27 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		slog.Info("slack integration disabled (MULTICA_SLACK_SECRET_KEY not set)")
 	}
 
+	// GitLab integration. Gated by MULTICA_GITLAB_SECRET_KEY, the at-rest
+	// encryption master key for personal access tokens and webhook secrets.
+	// When the key is absent the GitLab connection handlers return 503 with a
+	// clear message (MULTICA_GITLAB_SECRET_KEY is not set); the rest of the
+	// server starts unaffected so self-host deployments that have not opted in
+	// to GitLab continue normally. Webhook verification does NOT depend on the
+	// secretbox key — it uses only the cleartext secret hash, so a key-absent
+	// deployment that somehow has connection rows (e.g. migrated data) still
+	// processes inbound webhooks correctly.
+	if gitlabKey, err := secretbox.LoadKey("MULTICA_GITLAB_SECRET_KEY"); err == nil {
+		box, err := secretbox.New(gitlabKey)
+		if err != nil {
+			slog.Error("gitlab: secretbox.New failed; gitlab integration disabled", "error", err)
+		} else {
+			h.GitLabBox = box
+			slog.Info("gitlab integration enabled")
+		}
+	} else {
+		slog.Info("gitlab integration disabled (MULTICA_GITLAB_SECRET_KEY not set)")
+	}
+
 	// Composio integration (MUL-3720). Gated by COMPOSIO_API_KEY plus the
 	// composio_mcp_apps feature flag. The env var is the project-scoped key the
 	// standalone SDK authenticates Composio with (sent as x-api-key; the project
@@ -945,6 +966,19 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
 					r.Delete("/slack/installations/{installationId}", h.RevokeSlackInstallation)
 					r.Post("/slack/install/byo", h.RegisterSlackBYO)
+				})
+
+				// GitLab integration — listing is member-visible (same
+				// rationale as GitHub: the Integrations tab must render for
+				// non-admins); connect / delete remain admin-only.
+				r.Group(func(r chi.Router) {
+					r.Use(middleware.RequireWorkspaceMemberFromURL(queries, "id"))
+					r.Get("/gitlab/connections", h.ListGitLabConnections)
+				})
+				r.Group(func(r chi.Router) {
+					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
+					r.Post("/gitlab/connections", h.CreateGitLabConnection)
+					r.Delete("/gitlab/connections/{connectionID}", h.DeleteGitLabConnection)
 				})
 			})
 		})
