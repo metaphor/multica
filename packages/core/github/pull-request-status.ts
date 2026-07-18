@@ -86,14 +86,22 @@ export interface PullRequestStatsInput {
   additions?: number;
   deletions?: number;
   changed_files?: number;
+  /** Forge discriminator. When "gitlab", the guard gates on changed_files
+   *  alone (GitLab MRs don't carry additions/deletions in this payload).
+   *  When omitted or "github", the existing sum-of-three logic applies. */
+  provider?: string;
 }
 
 // shouldShowPullRequestStats encodes the "old backend → new frontend" guard:
-// when the backend that served this PR row doesn't know about the stats
+// when the backend that served this row doesn't know about the stats
 // columns yet, every numeric field defaults to 0. Rendering "+0 −0 · 0 files"
 // in that case would be a lie (the PR almost certainly has real changes),
 // so we hide the entire stats row until at least one signal is non-zero.
+// GitLab MRs only carry changed_files, so the guard gates on that field alone.
 export function shouldShowPullRequestStats(input: PullRequestStatsInput): boolean {
+  if (input.provider === "gitlab") {
+    return (input.changed_files ?? 0) > 0;
+  }
   const a = input.additions ?? 0;
   const d = input.deletions ?? 0;
   const f = input.changed_files ?? 0;

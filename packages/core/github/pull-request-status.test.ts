@@ -143,4 +143,24 @@ describe("shouldShowPullRequestStats", () => {
     expect(shouldShowPullRequestStats({ changed_files: 1 })).toBe(true);
     expect(shouldShowPullRequestStats({ additions: 437, deletions: 6, changed_files: 6 })).toBe(true);
   });
+
+  it("provider=gitlab: gates on changed_files alone, ignores adds/dels", () => {
+    expect(shouldShowPullRequestStats({ provider: "gitlab", changed_files: 3 })).toBe(true);
+    expect(shouldShowPullRequestStats({ provider: "gitlab", changed_files: 0 })).toBe(false);
+    expect(shouldShowPullRequestStats({ provider: "gitlab" })).toBe(false);
+    // GitLab MR with changed_files but zero adds/dels should still show
+    expect(shouldShowPullRequestStats({
+      provider: "gitlab",
+      additions: 0,
+      deletions: 0,
+      changed_files: 5,
+    })).toBe(true);
+  });
+
+  it("provider=github (or omitted): existing sum-of-three logic", () => {
+    expect(shouldShowPullRequestStats({ provider: "github", additions: 1 })).toBe(true);
+    expect(shouldShowPullRequestStats({ provider: "github", changed_files: 1 })).toBe(true);
+    expect(shouldShowPullRequestStats({ provider: "github" })).toBe(false);
+    expect(shouldShowPullRequestStats({ additions: 1 })).toBe(true);
+  });
 });

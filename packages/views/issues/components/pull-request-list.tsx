@@ -125,6 +125,7 @@ function PullRequestRow({ pr }: { pr: GitHubPullRequest }) {
     additions: pr.additions,
     deletions: pr.deletions,
     changed_files: pr.changed_files,
+    provider: pr.provider,
   });
   const statusText = useStatusText(kind);
   const draftPrefix = pr.state === "draft";
@@ -148,6 +149,7 @@ function PullRequestRow({ pr }: { pr: GitHubPullRequest }) {
         </p>
         <p className="text-[11px] text-muted-foreground truncate">
           {pr.repo_owner}/{pr.repo_name}#{pr.number} · {stateLabel}
+          <ProviderPill provider={pr.provider} />
           {pr.author_login ? ` · @${pr.author_login}` : null}
         </p>
         <PullRequestRowDetails
@@ -205,11 +207,16 @@ function PullRequestRowDetails({
 
 function PullRequestStats({ pr }: { pr: GitHubPullRequest }) {
   const { t } = useT("issues");
+  const isGitLab = pr.provider === "gitlab";
   return (
     <span className="inline-flex items-center gap-1.5 tabular-nums">
-      <span className="text-emerald-600 dark:text-emerald-400">+{pr.additions ?? 0}</span>
-      <span className="text-rose-600 dark:text-rose-400">−{pr.deletions ?? 0}</span>
-      <span aria-hidden="true">·</span>
+      {!isGitLab && (
+        <>
+          <span className="text-emerald-600 dark:text-emerald-400">+{pr.additions ?? 0}</span>
+          <span className="text-rose-600 dark:text-rose-400">−{pr.deletions ?? 0}</span>
+          <span aria-hidden="true">·</span>
+        </>
+      )}
       <span>
         {t(($) => $.detail.pull_request_card_files_count, {
           count: pr.changed_files ?? 0,
@@ -333,4 +340,19 @@ function useStatusText(kind: PullRequestStatusKind): string {
     case "unknown":
       return t(($) => $.detail.pull_request_card_status_unknown);
   }
+}
+
+function ProviderPill({ provider }: { provider: string }) {
+  if (provider === "gitlab") {
+    return (
+      <span className="ml-1 inline-flex items-center rounded-sm border border-orange-200 px-1 py-px text-[10px] font-medium text-orange-600 dark:border-orange-800 dark:text-orange-400">
+        MR
+      </span>
+    );
+  }
+  return (
+    <span className="ml-1 inline-flex items-center rounded-sm border px-1 py-px text-[10px] font-medium text-muted-foreground">
+      PR
+    </span>
+  );
 }

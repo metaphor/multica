@@ -209,4 +209,46 @@ describe("PullRequestList sidebar rows", () => {
     expect(screen.queryByText("PR-D")).not.toBeInTheDocument();
     expect(screen.getByText("Show 1 more")).toBeInTheDocument();
   });
+
+  it("renders PR provider badge for github rows", async () => {
+    mockPRs = [makePR({ additions: 5, deletions: 2, changed_files: 3 })];
+    renderList();
+    await waitForRender();
+    expect(screen.getByText("PR")).toBeInTheDocument();
+  });
+
+  it("renders MR provider badge and files-only stats for gitlab rows", async () => {
+    mockPRs = [
+      makePR({ provider: "gitlab", changed_files: 7 }),
+    ];
+    renderList();
+    await waitForRender();
+    expect(screen.getByText("MR")).toBeInTheDocument();
+    expect(screen.getByText("7 files")).toBeInTheDocument();
+    expect(screen.queryByText(/^\+/)).not.toBeInTheDocument();
+  });
+
+  it("handles MR with zero changed_files (no stats row)", async () => {
+    mockPRs = [makePR({ provider: "gitlab", changed_files: 0 })];
+    renderList();
+    await waitForRender();
+    expect(screen.getByText("MR")).toBeInTheDocument();
+    expect(screen.queryByText(/files?$/)).not.toBeInTheDocument();
+  });
+
+  it("renders mixed github + gitlab list side by side", async () => {
+    mockPRs = [
+      makePR({ id: "gh", provider: "github", number: 1, additions: 10, deletions: 3, changed_files: 4, title: "GH PR" }),
+      makePR({ id: "gl", provider: "gitlab", number: 2, changed_files: 5, title: "GL MR" }),
+    ];
+    renderList();
+    await waitForRender();
+    expect(screen.getByText("+10")).toBeInTheDocument();
+    expect(screen.getByText("−3")).toBeInTheDocument();
+    expect(screen.getByText("4 files")).toBeInTheDocument();
+    expect(screen.getByText("5 files")).toBeInTheDocument();
+    // Both badges should be present
+    expect(screen.getAllByText("PR").length).toBe(1);
+    expect(screen.getAllByText("MR").length).toBe(1);
+  });
 });
