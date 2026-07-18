@@ -633,6 +633,134 @@ func TestGitLabMR_BoxNilSkipsAuthor(t *testing.T) {
 	})
 }
 
+// TestGitLabMR_MetaUpdate_PreservesMergeable verifies that a metadata-only
+// "update" event (e.g. label change) with detailed_merge_status=mergeable
+// does NOT clear the existing mergeable_state. Before the fix, clear=true
+// caused the SQL CASE to write NULL, dropping "clean" → "unknown".
+func TestGitLabMR_MetaUpdate_PreservesMergeable(t *testing.T) {
+	fakeGL := newFakeGitLabAPI(t, "gl-meta-user", "", http.StatusOK)
+	defer fakeGL.Close()
+	conn := seedGitLabConnectionMRTest(t, fakeGL.URL, "glpat-test-token")
+	ctx := context.Background()
+
+	// Step 1: seed a row with mergeable_state = 'clean'.
+	initialPayload := makeMRPayload("org/sub/repo", "open", "opened", "mergeable",
+		"sha-meta-1", 42)
+	err := testHandler.handleGitLabMergeRequestEvent(ctx, conn, initialPayload)
+	if err != nil {
+		t.Fatalf("step 1 (open): %v", err)
+	}
+
+	var ms string
+	err = testPool.QueryRow(ctx, `
+		SELECT mergeable_state FROM github_pull_request
+		WHERE workspace_id=$1 AND provider='gitlab' AND repo_owner='org/sub' AND repo_name='repo' AND pr_number=1
+	`, testWorkspaceID).Scan(&ms)
+	if err != nil {
+		t.Fatalf("step 1 query: %v", err)
+	}
+	if ms != "clean" {
+		t.Fatalf("step 1 mergeable_state = %q, want clean", ms)
+	}
+
+	// Step 2: send a metadata update (same detailed_merge_status).
+	updatePayload := makeMRPayload("org/sub/repo", "update", "opened", "mergeable",
+		"sha-meta-1", 42)
+	err = testHandler.handleGitLabMergeRequestEvent(ctx, conn, updatePayload)
+	if err != nil {
+		t.Fatalf("step 2 (update): %v", err)
+	}
+
+	err = testPool.QueryRow(ctx, `
+		SELECT mergeable_state FROM github_pull_request
+		WHERE workspace_id=$1 AND provider='gitlab' AND repo_owner='org/sub' AND repo_name='repo' AND pr_number=1
+	`, testWorkspaceID).Scan(&ms)
+	if err != nil {
+		t.Fatalf("step 2 query: %v", err)
+	}
+	if ms != "clean" {
+		t.Errorf("after metadata update: mergeable_state = %q, want clean (was NULL before fix)", ms)
+	}
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE workspace_id=$1 AND provider='gitlab'`, testWorkspaceID)
+	})
+}
+
+// TestGitLabMR_OpenWithChecking_WritesUnknown verifies that an MR opened
+// with detailed_merge_status=checking writes "unknown" (not NULL).
+func TestGitLabMR_OpenWithChecking_WritesUnknown(t *testing.T) {
+	fakeGL := newFakeGitLabAPI(t, "gl-check-user", "", http.StatusOK)
+	defer fakeGL.Close()
+	conn := seedGitLabConnectionMRTest(t, fakeGL.URL, "glpat-test-token")
+	ctx := context.Background()
+
+	body := makeMRPayload("org/sub/repo", "open", "opened", "checking",
+		"sha-check-1", 43)
+	err := testHandler.handleGitLabMergeRequestEvent(ctx, conn, body)
+	if err != nil {
+		t.Fatalf("open with checking: %v", err)
+	}
+
+	var ms string
+	err = testPool.QueryRow(ctx, `
+		SELECT mergeable_state FROM github_pull_request
+		WHERE workspace_id=$1 AND provider='gitlab' AND repo_owner='org/sub' AND repo_name='repo' AND pr_number=1
+	`, testWorkspaceID).Scan(&ms)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if ms != "unknown" {
+		t.Errorf("mergeable_state = %q, want unknown (was NULL before fix)", ms)
+	}
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE workspace_id=$1 AND provider='gitlab'`, testWorkspaceID)
+	})
+}
+
+// TestGitLabMR_EmptyDetailedStatus_PreservesExisting verifies that when
+// detailed_merge_status is empty, the existing mergeable_state is preserved
+// via the three-state CASE branch 3.
+func TestGitLabMR_EmptyDetailedStatus_PreservesExisting(t *testing.T) {
+	fakeGL := newFakeGitLabAPI(t, "gl-empty-user", "", http.StatusOK)
+	defer fakeGL.Close()
+	conn := seedGitLabConnectionMRTest(t, fakeGL.URL, "glpat-test-token")
+	ctx := context.Background()
+
+	// Step 1: seed with mergeable → "clean".
+	initialPayload := makeMRPayload("org/sub/repo", "open", "opened", "mergeable",
+		"sha-empty-1", 44)
+	err := testHandler.handleGitLabMergeRequestEvent(ctx, conn, initialPayload)
+	if err != nil {
+		t.Fatalf("step 1 (open): %v", err)
+	}
+
+	// Step 2: update with empty detailed_merge_status.
+	updatePayload := makeMRPayload("org/sub/repo", "update", "opened", "",
+		"sha-empty-1", 44)
+	err = testHandler.handleGitLabMergeRequestEvent(ctx, conn, updatePayload)
+	if err != nil {
+		t.Fatalf("step 2 (update with empty status): %v", err)
+	}
+
+	var ms string
+	err = testPool.QueryRow(ctx, `
+		SELECT mergeable_state FROM github_pull_request
+		WHERE workspace_id=$1 AND provider='gitlab' AND repo_owner='org/sub' AND repo_name='repo' AND pr_number=1
+	`, testWorkspaceID).Scan(&ms)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if ms != "clean" {
+		t.Errorf("mergeable_state = %q, want clean (preserved via CASE branch 3)", ms)
+	}
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE workspace_id=$1 AND provider='gitlab'`, testWorkspaceID)
+	})
+}
+
 // ── Fake GitLab API ──────────────────────────────────────────────────────────
 
 // newFakeGitLabAPI starts an httptest server that:

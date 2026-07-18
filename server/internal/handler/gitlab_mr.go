@@ -90,7 +90,7 @@ func (h *Handler) handleGitLabMergeRequestEvent(ctx context.Context, conn db.Git
 
 	// 4. Derive mergeable_state.
 	mergeable := deriveGitLabMergeableState(oa.DetailedMergeStatus)
-	clearMergeable := deriveGitLabMRClearMergeableState(oa.Action)
+	clearMergeable := deriveGitLabMRMergeableRefresh()
 
 	// 5. Parse head_sha.
 	headSHA := ""
@@ -137,7 +137,7 @@ func (h *Handler) handleGitLabMergeRequestEvent(ctx context.Context, conn db.Git
 		MergedAt:            mergedAt,
 		ClosedAt:            closedAt,
 		MergeableState:      mergeable,
-		ClearMergeableState: pgtype.Bool{Bool: clearMergeable, Valid: true},
+		ClearMergeableState: clearMergeable,
 	})
 	if err != nil {
 		slog.Warn("gitlab: upsert mr failed", "err", err, "repo", repoOwner+"/"+repoName, "mr", prNumber)
@@ -213,17 +213,25 @@ func deriveGitLabMergeableState(detailed string) pgtype.Text {
 	}
 }
 
-// deriveGitLabMRClearMergeableState mirrors GitHub's clear_mergeable_state
-// logic. For GitLab we clear (reset to NULL) when the MR was just opened,
-// reopened, or updated (new commits may have arrived). Terminal events
-// (close, merge) preserve the final mergeable verdict.
-func deriveGitLabMRClearMergeableState(action string) bool {
-	switch action {
-	case "open", "reopen", "update":
-		return true
-	default:
-		return false
-	}
+// deriveGitLabMRMergeableRefresh returns whether the mergeable_state should
+// be cleared (written as NULL). Unlike GitHub — where state-change events
+// carry a stale or absent mergeable_state and therefore must NULL the old
+// verdict — GitLab payloads ALWAYS include detailed_merge_status. Every
+// event carries a value that can be mapped to a canonical state, and even
+// metadata-only "update" events include the current detailed_merge_status.
+//
+// key difference from GitHub's derivePRMergeableState:
+//   - GitHub: clear=true on open/reopen/synchronize because payload's
+//     mergeable_state is stale → SQL CASE branch 1 writes NULL
+//   - GitLab: always clear=false because the mapped value from
+//     detailed_merge_status is always at least as fresh as the existing
+//     row — CASE branch 2 writes the mapped value (which may equal the
+//     existing value on metadata-only events, a no-op), and branch 3
+//     preserves when detailed_merge_status is empty.
+//
+// T9 faces the same choice when processing pipeline events.
+func deriveGitLabMRMergeableRefresh() pgtype.Bool {
+	return pgtype.Bool{Bool: false, Valid: true}
 }
 
 // ── Author backfill ─────────────────────────────────────────────────────────
