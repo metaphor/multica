@@ -981,6 +981,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Delete("/gitlab/connections/{connectionID}", h.DeleteGitLabConnection)
 					r.Post("/gitlab/connections/{connectionID}/hooks", h.AddGitLabHookTarget)
 					r.Delete("/gitlab/connections/{connectionID}/hooks", h.RemoveGitLabHookTarget)
+					r.Put("/gitlab/connections/{connectionID}/token", h.UpdateGitLabConnectionToken)
+					r.Post("/gitlab/connections/{connectionID}/rotate-secret", h.RotateGitLabConnectionSecret)
 				})
 			})
 		})
