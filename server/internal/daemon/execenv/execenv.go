@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
@@ -315,14 +316,41 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 		LocalDirectory: params.LocalWorkDir != "",
 		logger:         logger,
 	}
-	// When the task asks for a custom agent Cwd, resolve it relative to the
-	// workdir (or keep it verbatim when it is already absolute).
-	if params.EnableAgentWorkdir && params.AgentWorkdir != "" {
-		cwd := params.AgentWorkdir
-		if !filepath.IsAbs(cwd) {
-			cwd = filepath.Join(workDir, cwd)
+	// When the task asks for a custom agent Cwd, validate the path and
+	// resolve it under workDir. The API handler already enforces strict
+	// validation, so invalid paths should not normally reach here; the
+	// fallback is defense-in-depth.
+	if params.EnableAgentWorkdir {
+		agentWD := strings.TrimSpace(params.AgentWorkdir)
+		switch {
+		case agentWD == "":
+			logger.Warn("execenv: agent_workdir is empty, falling back to workdir")
+		case filepath.IsAbs(agentWD):
+			logger.Warn("execenv: agent_workdir is absolute, falling back to workdir",
+				"agent_workdir", params.AgentWorkdir)
+		case hasDotDotSegment(agentWD):
+			logger.Warn("execenv: agent_workdir contains .. segment, falling back to workdir",
+				"agent_workdir", params.AgentWorkdir)
+		default:
+			cleaned := filepath.Clean(agentWD)
+			if cleaned == "." || cleaned == "" {
+				logger.Warn("execenv: agent_workdir resolves to root, falling back to workdir",
+					"agent_workdir", params.AgentWorkdir)
+			} else {
+				resolved := filepath.Join(workDir, cleaned)
+				// Defense-in-depth: verify the resolved path is still under workDir.
+				if !strings.HasPrefix(resolved, workDir+string(filepath.Separator)) && resolved != workDir {
+					logger.Warn("execenv: resolved agent Cwd escapes workdir, falling back to workdir",
+						"agent_workdir", params.AgentWorkdir, "resolved", resolved)
+				} else {
+					env.Cwd = resolved
+				}
+			}
 		}
-		env.Cwd = cwd
+	}
+	// Ensure the Cwd directory exists (no-op when workDir was already created).
+	if err := os.MkdirAll(env.Cwd, 0o755); err != nil {
+		return nil, fmt.Errorf("execenv: create Cwd directory %s: %w", env.Cwd, err)
 	}
 
 	// Write context files into workdir (skills go to provider-native paths).
@@ -428,6 +456,17 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 
 	logger.Info("execenv: prepared env", "root", envRoot, "repos_available", len(params.Task.Repos))
 	return env, nil
+}
+
+// hasDotDotSegment returns true when path contains ".." as a complete path
+// segment. "my..dir" is not a dot-dot segment; "foo/../bar" is.
+func hasDotDotSegment(path string) bool {
+	for _, part := range strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // ReuseParams describes the inputs to Reuse. It mirrors PrepareParams for

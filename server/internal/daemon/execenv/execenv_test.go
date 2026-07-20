@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -4839,8 +4840,8 @@ func TestEnvironmentCleanupStandardModeRemovesWorkdir(t *testing.T) {
 }
 
 // TestPrepareAgentCwd exercises the EnableAgentWorkdir / AgentWorkdir
-// contract on PreparePath: Cwd defaults to WorkDir, resolves relative
-// AgentWorkdir against WorkDir, and keeps absolute paths verbatim.
+// contract on PreparePath: Cwd defaults to WorkDir, resolves validated
+// relative AgentWorkdir against WorkDir, and rejects absolute paths.
 func TestPrepareAgentCwd(t *testing.T) {
 	t.Parallel()
 
@@ -4882,31 +4883,41 @@ func TestPrepareAgentCwd(t *testing.T) {
 		}
 	})
 
-	t.Run("keeps absolute AgentWorkdir", func(t *testing.T) {
+	t.Run("rejects absolute AgentWorkdir, falls back", func(t *testing.T) {
 		t.Parallel()
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, nil))
 		p := baseParams("c1b2c3d4-e5f6-7890-abcd-ef1234567892")
 		p.EnableAgentWorkdir = true
 		p.AgentWorkdir = "/tmp/agent-here"
-		env, err := Prepare(p, testLogger())
-		if err != nil {
-			t.Fatalf("Prepare: %v", err)
-		}
-		if env.Cwd != "/tmp/agent-here" {
-			t.Errorf("Cwd = %q, want /tmp/agent-here", env.Cwd)
-		}
-	})
-
-	t.Run("empty AgentWorkdir keeps default", func(t *testing.T) {
-		t.Parallel()
-		p := baseParams("d1b2c3d4-e5f6-7890-abcd-ef1234567893")
-		p.EnableAgentWorkdir = true
-		p.AgentWorkdir = ""
-		env, err := Prepare(p, testLogger())
+		env, err := Prepare(p, logger)
 		if err != nil {
 			t.Fatalf("Prepare: %v", err)
 		}
 		if env.Cwd != env.WorkDir {
 			t.Errorf("Cwd = %q, want WorkDir %q", env.Cwd, env.WorkDir)
+		}
+		if !strings.Contains(buf.String(), "agent_workdir is absolute") {
+			t.Errorf("expected 'agent_workdir is absolute' warning, got: %s", buf.String())
+		}
+	})
+
+	t.Run("empty AgentWorkdir falls back", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, nil))
+		p := baseParams("d1b2c3d4-e5f6-7890-abcd-ef1234567893")
+		p.EnableAgentWorkdir = true
+		p.AgentWorkdir = ""
+		env, err := Prepare(p, logger)
+		if err != nil {
+			t.Fatalf("Prepare: %v", err)
+		}
+		if env.Cwd != env.WorkDir {
+			t.Errorf("Cwd = %q, want WorkDir %q", env.Cwd, env.WorkDir)
+		}
+		if !strings.Contains(buf.String(), "agent_workdir is empty") {
+			t.Errorf("expected 'agent_workdir is empty' warning, got: %s", buf.String())
 		}
 	})
 }
@@ -4938,5 +4949,150 @@ func TestReuseAgentCwd(t *testing.T) {
 	}
 	if reused.Cwd != reused.WorkDir {
 		t.Errorf("Cwd = %q, want WorkDir %q", reused.Cwd, reused.WorkDir)
+	}
+}
+
+func TestResolveAgentCwd(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name     string
+		agentWD  string
+		wantCwd  string // expected suffix relative to WorkDir; empty = WorkDir itself
+		wantWarn string // expected warning substring; empty = no warning expected
+	}
+
+	// wantCwd is compared as a suffix because WorkDir contains unpredictable
+	// temp paths. For valid cases the Cwd must end with "/<suffix>"; for
+	// fallback cases we check Cwd == WorkDir (suffix "").
+	//
+	// The "cwd not created" test cases verify that the fallback leaves the
+	// agent at the original workDir.
+
+	tests := []testCase{
+		{
+			name:     "empty string with enable=true falls back",
+			agentWD:  "",
+			wantWarn: "agent_workdir is empty",
+		},
+		{
+			name:     "whitespace-only falls back",
+			agentWD:  "   ",
+			wantWarn: "agent_workdir is empty",
+		},
+		{
+			name:     "absolute path falls back",
+			agentWD:  "/etc/passwd",
+			wantWarn: "agent_workdir is absolute",
+		},
+		{
+			name:     "dot-dot segment falls back",
+			agentWD:  "..",
+			wantWarn: "agent_workdir contains .. segment",
+		},
+		{
+			name:     "dot-dot in nested path falls back",
+			agentWD:  "foo/../bar",
+			wantWarn: "agent_workdir contains .. segment",
+		},
+		{
+			name:     "dot resolves to root, falls back",
+			agentWD:  ".",
+			wantWarn: "agent_workdir resolves to root",
+		},
+		{
+			name:    "valid relative path accepted",
+			agentWD: "mydir",
+			wantCwd: "/mydir",
+		},
+		{
+			name:    "my..dir with embedded dots accepted",
+			agentWD: "my..dir",
+			wantCwd: "/my..dir",
+		},
+		{
+			name:    "trailing slash cleaned and accepted",
+			agentWD: "somedir/",
+			wantCwd: "/somedir",
+		},
+		{
+			name:    "nested relative path accepted",
+			agentWD: "deep/nested/path",
+			wantCwd: "/deep/nested/path",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			workspacesRoot := t.TempDir()
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+			env, err := Prepare(PrepareParams{
+				WorkspacesRoot:     workspacesRoot,
+				WorkspaceID:        "ws-cwd-test",
+				TaskID:             "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+				AgentName:          "Cwd Test Agent",
+				EnableAgentWorkdir: true,
+				AgentWorkdir:       tt.agentWD,
+				Task:               TaskContextForEnv{IssueID: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"},
+			}, logger)
+			if err != nil {
+				t.Fatalf("Prepare failed: %v", err)
+			}
+			defer env.Cleanup(true)
+
+			if tt.wantCwd == "" {
+				// Fallback: Cwd must equal WorkDir.
+				if env.Cwd != env.WorkDir {
+					t.Errorf("Cwd = %q, want WorkDir %q", env.Cwd, env.WorkDir)
+				}
+			} else {
+				if !strings.HasSuffix(env.Cwd, tt.wantCwd) {
+					t.Errorf("Cwd = %q, want suffix %q", env.Cwd, tt.wantCwd)
+				}
+				if _, err := os.Stat(env.Cwd); os.IsNotExist(err) {
+					t.Errorf("Cwd directory was not created: %s", env.Cwd)
+				}
+			}
+
+			// Check warning.
+			logOutput := buf.String()
+			if tt.wantWarn != "" {
+				if !strings.Contains(logOutput, tt.wantWarn) {
+					t.Errorf("log missing expected warning %q\nlog:\n%s", tt.wantWarn, logOutput)
+				}
+			} else {
+				if strings.Contains(logOutput, "falling back to workdir") {
+					t.Errorf("unexpected fallback warning in log:\n%s", logOutput)
+				}
+			}
+		})
+	}
+}
+
+func TestResolveAgentCwdDisabled(t *testing.T) {
+	t.Parallel()
+
+	workspacesRoot := t.TempDir()
+	env, err := Prepare(PrepareParams{
+		WorkspacesRoot:     workspacesRoot,
+		WorkspaceID:        "ws-cwd-off",
+		TaskID:             "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+		AgentName:          "Cwd Off Agent",
+		EnableAgentWorkdir: false,
+		AgentWorkdir:       "somedir",
+		Task:               TaskContextForEnv{IssueID: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"},
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+	defer env.Cleanup(true)
+
+	if env.Cwd != env.WorkDir {
+		t.Errorf("when EnableAgentWorkdir is false, Cwd = %q, want WorkDir %q", env.Cwd, env.WorkDir)
 	}
 }
