@@ -177,3 +177,29 @@
 - `go vet ./internal/daemon/...` reports no issues.
 - `gofmt -l internal/daemon/daemon_test.go` reports no formatting issues.
 - A pre-existing `execenv` test failure was observed: `TestPrepareOpenclawConfigUsesCwdWhenWorkdirEnabled` fails because `openclaw` is not on `PATH`. This is unrelated to Task 14 and is documented in `issues.md`.
+
+## Task 11: Add opt-in toggle and relative-path input for agent_workdir in project detail sidebar
+
+### Implementation notes
+
+- Added a new "Runtime" collapsible section to the project detail sidebar (between Properties and Progress) using the existing section header pattern.
+- The toggle uses `Switch` and the path input uses `Input` from `@multica/ui/components/ui`.
+- The component reads `project.settings` and merges updates into a `settings` payload: `{ ...project.settings, enable_agent_workdir: checked, agent_workdir: trimmed }`.
+- Updates are sent via `handleUpdateField({ settings: mergedSettings })`, which uses the real `useUpdateProject` hook.
+- The path input is client-side validated: non-empty, no leading `/`, no `..` path segments. Errors are shown before the mutation is called.
+- A best-effort repo-name collision warning is computed from `projectResourcesOptions`, extracting GitHub repo names from `github_repo` resources and warning when the draft matches (case-insensitive).
+- Added i18n keys for the new section and validation messages to all four `projects` namespaces.
+
+### Test notes
+
+- Added `packages/views/projects/components/project-detail.test.tsx` with seven tests covering the runtime section rendering, switch toggle, valid path commit, three invalid path cases (empty, leading `/`, `..`), and the repo-name warning.
+- The test uses the real `useUpdateProject` hook and a mocked `api` object so optimistic updates and refetches flow through React Query. The `api.updateProject` spy mutates the shared fixture so refetches return the updated settings.
+- `useRecentContextStore` had to be mocked as a selector-supporting hook (Zustand shape), not a plain object.
+- The `api.listProjectResources` mock needed `mockImplementation` so the resource fixture could be varied per test.
+
+### Key decisions
+
+- Kept all UI validation local to the view component; no changes to `packages/core/`.
+- Did not touch the create-project flow.
+- Added `agent_workdir_error` as a fifth i18n key to keep the validation message localized, even though the task list only named the four primary keys.
+

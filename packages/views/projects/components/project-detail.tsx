@@ -7,10 +7,11 @@ import { useQuery } from "@tanstack/react-query";
 import { cn } from "@multica/ui/lib/utils";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { toast } from "sonner";
-import type { ProjectStatus, ProjectPriority } from "@multica/core/types";
+import type { ProjectStatus, ProjectPriority, GithubRepoResourceRef } from "@multica/core/types";
 import { useAuthStore } from "@multica/core/auth";
 import { projectDetailOptions } from "@multica/core/projects/queries";
 import { useUpdateProject, useDeleteProject } from "@multica/core/projects/mutations";
+import { projectResourcesOptions } from "@multica/core/projects";
 import { pinListOptions } from "@multica/core/pins";
 import { useCreatePin, useDeletePin } from "@multica/core/pins";
 import { memberListOptions, agentListOptions } from "@multica/core/workspace/queries";
@@ -30,6 +31,8 @@ import { ProjectDueDatePicker } from "./project-due-date-picker";
 import { IssueSurface } from "../../issues/surface/issue-surface";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Button } from "@multica/ui/components/ui/button";
+import { Input } from "@multica/ui/components/ui/input";
+import { Switch } from "@multica/ui/components/ui/switch";
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@multica/ui/components/ui/resizable";
 import { Sheet, SheetContent } from "@multica/ui/components/ui/sheet";
 import { useIsMobile } from "@multica/ui/hooks/use-mobile";
@@ -93,6 +96,16 @@ function PropRow({
   );
 }
 
+function repoNameFromUrl(url: string): string | null {
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+  const withoutGit = trimmed.replace(/\.git$/i, "");
+  const withoutTrailingSlash = withoutGit.replace(/\/$/, "");
+  const lastSep = Math.max(withoutTrailingSlash.lastIndexOf("/"), withoutTrailingSlash.lastIndexOf("\\"));
+  if (lastSep === -1) return withoutTrailingSlash;
+  return withoutTrailingSlash.slice(lastSep + 1);
+}
+
 // ---------------------------------------------------------------------------
 // ProjectDetail
 // ---------------------------------------------------------------------------
@@ -147,6 +160,12 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
   const [propertiesOpen, setPropertiesOpen] = useState(true);
   const [progressOpen, setProgressOpen] = useState(true);
   const [descriptionOpen, setDescriptionOpen] = useState(true);
+
+  const [runtimeOpen, setRuntimeOpen] = useState(true);
+  const [agentWorkdirDraft, setAgentWorkdirDraft] = useState("");
+  const [agentWorkdirError, setAgentWorkdirError] = useState<string | null>(null);
+
+  const { data: resources = [] } = useQuery(projectResourcesOptions(wsId, projectId));
 
   // Sidebar panel
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
@@ -235,6 +254,63 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 
   const issueMetrics = getProjectIssueMetrics(project);
   const statusCfg = PROJECT_STATUS_CONFIG[project.status];
+
+  const enableAgentWorkdir = Boolean(project.settings?.enable_agent_workdir);
+  const agentWorkdir = typeof project.settings?.agent_workdir === "string" ? project.settings.agent_workdir : "";
+
+  useEffect(() => {
+    setAgentWorkdirDraft(agentWorkdir);
+    setAgentWorkdirError(null);
+  }, [agentWorkdir, project.id]);
+
+  const repoNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const r of resources) {
+      if (r.resource_type === "github_repo") {
+        const name = repoNameFromUrl((r.resource_ref as GithubRepoResourceRef).url);
+        if (name) names.add(name.toLowerCase());
+      }
+    }
+    return names;
+  }, [resources]);
+
+  const repoWarning = enableAgentWorkdir && repoNames.has(agentWorkdirDraft.trim().toLowerCase());
+
+  const validateAgentWorkdir = useCallback((value: string): string | null => {
+    const trimmed = value.trim();
+    if (!trimmed) return t(($) => $.detail.agent_workdir_error);
+    if (trimmed.startsWith("/")) return t(($) => $.detail.agent_workdir_error);
+    if (trimmed.split(/[/\\]/).some((segment) => segment === "..")) return t(($) => $.detail.agent_workdir_error);
+    return null;
+  }, [t]);
+
+  const handleAgentWorkdirBlur = useCallback(() => {
+    const trimmed = agentWorkdirDraft.trim();
+    const error = validateAgentWorkdir(trimmed);
+    if (error) {
+      setAgentWorkdirError(error);
+      return;
+    }
+    setAgentWorkdirError(null);
+    handleUpdateField({
+      settings: {
+        ...project.settings,
+        enable_agent_workdir: enableAgentWorkdir,
+        agent_workdir: trimmed,
+      },
+    });
+  }, [agentWorkdirDraft, enableAgentWorkdir, project.settings, handleUpdateField, validateAgentWorkdir]);
+
+  const handleToggleAgentWorkdir = useCallback((checked: boolean) => {
+    handleUpdateField({
+      settings: {
+        ...project.settings,
+        enable_agent_workdir: checked,
+        agent_workdir: agentWorkdirDraft.trim(),
+      },
+    });
+    setAgentWorkdirError(null);
+  }, [agentWorkdirDraft, project.settings, handleUpdateField]);
 
   const sidebarContent = (
     <div className="space-y-5">
@@ -407,6 +483,52 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
             <ProjectDueDatePicker dueDate={project.due_date} onUpdate={handleUpdateField} />
           </PropRow>
         </div>}
+      </div>
+
+      {/* Runtime */}
+      <div>
+        <button
+          type="button"
+          className={`flex w-full items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors mb-2 hover:bg-accent/70 ${runtimeOpen ? "" : "text-muted-foreground hover:text-foreground"}`}
+          onClick={() => setRuntimeOpen(!runtimeOpen)}
+        >
+          {t(($) => $.detail.section_runtime)}
+          <ChevronRight className={`!size-3 shrink-0 stroke-[2.5] text-muted-foreground transition-transform ${runtimeOpen ? "rotate-90" : ""}`} />
+        </button>
+        {runtimeOpen && (
+          <div className="pl-2 space-y-2">
+            <label className="flex cursor-pointer items-center justify-between gap-2 rounded-md px-2 -mx-2 py-1.5 hover:bg-accent/50 transition-colors">
+              <span className="text-xs">{t(($) => $.detail.agent_workdir_toggle)}</span>
+              <Switch
+                checked={enableAgentWorkdir}
+                onCheckedChange={handleToggleAgentWorkdir}
+                size="sm"
+                aria-label={t(($) => $.detail.agent_workdir_toggle)}
+              />
+            </label>
+            {enableAgentWorkdir && (
+              <div className="space-y-1">
+                <Input
+                  value={agentWorkdirDraft}
+                  onChange={(e) => {
+                    setAgentWorkdirDraft(e.target.value);
+                    if (agentWorkdirError) setAgentWorkdirError(null);
+                  }}
+                  onBlur={handleAgentWorkdirBlur}
+                  placeholder={t(($) => $.detail.agent_workdir_placeholder)}
+                  aria-invalid={!!agentWorkdirError}
+                  aria-label={t(($) => $.detail.agent_workdir_placeholder)}
+                />
+                {agentWorkdirError && (
+                  <p className="text-xs text-destructive">{agentWorkdirError}</p>
+                )}
+                {repoWarning && !agentWorkdirError && (
+                  <p className="text-xs text-warning">{t(($) => $.detail.agent_workdir_repo_warning)}</p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Progress */}
