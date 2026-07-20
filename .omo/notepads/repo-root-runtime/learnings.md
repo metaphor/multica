@@ -56,3 +56,42 @@
 - Used `env.Cwd` unconditionally rather than a conditional (`if params.EnableAgentWorkdir { env.Cwd } else { workDir }`) because the fallback is structurally guaranteed — `Cwd` is set to `workDir` at initialization and only diverges inside the `if params.EnableAgentWorkdir` block.
 - Added `TestPrepareContextFilesWithAgentCwd` with two subtests: enabled (files go to Cwd) and disabled (files go to WorkDir). The subtests verify both `writeContextFiles` output and `InjectRuntimeConfig` placement.
 - The `ReuseParams` struct was not modified because custom-workdir reuse is blocked upstream.
+
+## Task 8: Set agent ExecOptions.Cwd to resolved Cwd
+
+### Implementation notes
+
+- Changed `daemon.go:4629` from `Cwd: env.WorkDir` to `Cwd: env.Cwd`. This is safe unconditionally because `env.Cwd` is initialized to `workDir` in `execenv.Prepare` and only diverges inside the `if params.EnableAgentWorkdir` block — when disabled, `env.Cwd == env.WorkDir` and behavior is unchanged.
+- No additional conditional guard needed since the Environment struct guarantees `Cwd` always holds the correct value regardless of feature toggle state.
+- The change flows through `agent.Backend.Execute` → `cmd.Dir = opts.Cwd` (e.g. claude.go:65), so the spawned agent process inherits the correct working directory.
+
+### Test notes
+
+- Added `TestRunTaskSetsAgentCwd` in `daemon_test.go` with two subtests:
+  - `enabled sets Cwd to subdirectory`: verifies the agent process PWD ends with `workdir/src` when `EnableAgentWorkdir: true, AgentWorkdir: "src"`.
+  - `disabled uses WorkDir`: verifies the agent process PWD ends with just `workdir` (no subdirectory) when `EnableAgentWorkdir: false`.
+- Follows the `leader_workdir_reuse_test.go` pattern: a fake shell-script agent binary that records `$PWD` and outputs valid Claude stream-json events. The test creates a non-leader `Task` and calls `runTask` directly.
+- Both subtests verify the agent completed (`result.Status == "completed"`) before checking the recorded Cwd, ensuring the test fails on backend errors rather than silently passing on a stale Cwd file.
+
+### Key decisions
+
+- Used the `leader_workdir_reuse_test.go` integration-test pattern (real `runTask` call, fake agent binary) rather than a unit-level mock because the ExecOptions construction is deep inside `runTask` and extracting it for a standalone test would require non-trivial refactoring.
+- The "disabled" subtest includes a negative assertion (checking the subdirectory does NOT appear in PWD) to guard against accidental Cwd contamination.
+
+## Task 9: Update runtime brief for pre-checked-out repos and custom Cwd
+
+### Implementation notes
+
+- Added `EnableAgentWorkdir`, `WorkDir`, and `AgentWorkdir` fields to `TaskContextForEnv` in `execenv/execenv.go`. These are populated in `runTask()` from the task and env structs — `EnableAgentWorkdir` and `AgentWorkdir` come from the task at construction time, while `WorkDir` is set right after `env` is established (post-reuse/prepare + pre-checkout).
+- Updated `writeRepositories` (`runtime_config_sections.go`): when `EnableAgentWorkdir` is true, the section tells the agent repos are already checked out at `{WorkDir}/{repoName}` and accessible from Cwd as `../{repoName}`. Also mentions the agent's Cwd path. When disabled, emits the existing `multica repo checkout <url>` instructions unchanged.
+- Updated `writeProjectContext`: when `EnableAgentWorkdir` is true, replaces the `multica repo checkout` instruction with pre-checked-out path listings for `github_repo` resources. Parses each `github_repo` resource's `resource_ref` JSON to extract the URL and compute the repo name via the existing `repoNameFromURL` helper.
+- Updated `writeWorkflowChat`: added `ctx TaskContextForEnv` parameter. When `EnableAgentWorkdir` is true and repos exist, the chat workflow says "Repos are already checked out" instead of instructing `multica repo checkout`. When disabled, the legacy instruction is unchanged.
+- The `encoding/json` import was added to `runtime_config_sections.go` for parsing github_repo resource_ref payloads in `writeProjectContext`.
+
+### Key decisions
+
+- `repoNameFromURL` (unexported, in `execenv/git.go`) was reused since both files are in the same `execenv` package — no need to export or duplicate.
+- `WorkDir` is set on `taskCtx` after the `env` is available (after the reuse/prepare block), not in the initial struct literal. The existing code flow already passes `taskCtx` to `InjectRuntimeConfig` later, so the deferred assignment is safe.
+- The `writeAvailableCommands` section (which lists all CLI commands) intentionally still includes `multica repo checkout` even when custom workdir is enabled — the CLI command still exists and the agent may use it for non-pre-checked-out repos.
+- Tests verify section-level content (not file-level) to avoid false negatives from the Available Commands section.
+- Five new tests added: `TestPreCheckoutReposInMetaSkill`, `TestPreCheckoutReposInMetaSkillDisabled`, `TestPreCheckoutProjectResourcesInMetaSkill`, `TestPreCheckoutChatWorkflow`, `TestPreCheckoutChatWorkflowDisabled`.

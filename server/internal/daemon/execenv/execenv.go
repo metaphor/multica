@@ -173,6 +173,18 @@ type TaskContextForEnv struct {
 	InitiatorID    string
 	InitiatorName  string
 	InitiatorEmail string
+	// EnableAgentWorkdir is true when the task has custom agent workdir
+	// enabled. Section writers use this to emit pre-checked-out repo paths
+	// instead of `multica repo checkout` instructions.
+	EnableAgentWorkdir bool
+	// WorkDir is the task's workdir root path. When EnableAgentWorkdir is
+	// true, repos are pre-checked-out here and accessible as sibling
+	// directories from the agent's Cwd.
+	WorkDir string
+	// AgentWorkdir is the relative subdirectory for the agent (resolved
+	// from WorkDir). Used to compute the relative path (`../{repoName}`)
+	// from the agent's Cwd to the pre-checked-out repos.
+	AgentWorkdir string
 }
 
 // SkillContextForEnv represents a skill to be written into the execution environment.

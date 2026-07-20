@@ -4017,3 +4017,120 @@ func TestPreCheckoutRepos(t *testing.T) {
 		}
 	})
 }
+
+// TestRunTaskSetsAgentCwd verifies that when EnableAgentWorkdir is set the
+// agent process runs with Cwd set to env.Cwd (the resolved subdirectory), and
+// when disabled the agent runs in WorkDir as before.
+func TestRunTaskSetsAgentCwd(t *testing.T) {
+	t.Parallel()
+
+	newCwdTestDaemon := func(t *testing.T) (*Daemon, string, string, func()) {
+		t.Helper()
+		testDir := t.TempDir()
+		fakeBin := filepath.Join(testDir, "claude")
+		argsFile := filepath.Join(testDir, "claude-args.txt")
+		cwdFile := filepath.Join(testDir, "claude-cwd.txt")
+		script := `#!/bin/sh
+pwd > "` + cwdFile + `"
+printf '%s\n' "$@" >> "` + argsFile + `"
+printf '%s\n' '--invocation-end--' >> "` + argsFile + `"
+IFS= read -r _
+printf '%s\n' '{"type":"system","session_id":"session-cwd-test"}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id":"session-cwd-test","result":"done"}'
+`
+		if err := os.WriteFile(fakeBin, []byte(script), 0o755); err != nil {
+			t.Fatalf("write fake agent: %v", err)
+		}
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		d := &Daemon{
+			client:     NewClient(srv.URL),
+			logger:     logger,
+			workspaces: map[string]*workspaceState{"ws-cwd-test": {}},
+			runtimeIndex: map[string]Runtime{
+				"rt-cwd-test": {ID: "rt-cwd-test", Provider: "claude"},
+			},
+			activeEnvRoots: make(map[string]int),
+			cfg: Config{
+				WorkspacesRoot: t.TempDir(),
+				AgentTimeout:   30 * time.Second,
+				ServerBaseURL:  srv.URL,
+				Agents: map[string]AgentEntry{
+					"claude": {Path: fakeBin},
+				},
+			},
+		}
+		return d, argsFile, cwdFile, srv.Close
+	}
+
+	newTask := func(enable bool, workdir string) Task {
+		return Task{
+			ID:                 "task-cwd-test",
+			WorkspaceID:        "ws-cwd-test",
+			RuntimeID:          "rt-cwd-test",
+			IssueID:            "issue-cwd-test",
+			AgentID:            "agent-cwd-test",
+			AuthToken:          "mat_cwd_test",
+			EnableAgentWorkdir: enable,
+			AgentWorkdir:       workdir,
+			Agent: &AgentData{
+				ID:   "agent-cwd-test",
+				Name: "cwd-test-agent",
+			},
+		}
+	}
+
+	t.Run("enabled sets Cwd to subdirectory", func(t *testing.T) {
+		d, _, cwdFile, cleanup := newCwdTestDaemon(t)
+		defer cleanup()
+
+		task := newTask(true, "src")
+		result, err := d.runTask(context.Background(), task, "claude", 0, d.logger)
+		if err != nil {
+			t.Fatalf("runTask: %v", err)
+		}
+		if result.Status != "completed" {
+			t.Fatalf("runTask status = %q, want completed (comment=%q)", result.Status, result.Comment)
+		}
+
+		cwdData, err := os.ReadFile(cwdFile)
+		if err != nil {
+			t.Fatalf("read cwd file: %v", err)
+		}
+		recordedCwd := strings.TrimSpace(string(cwdData))
+		expectedSuffix := filepath.Join("workdir", "src")
+		if !strings.HasSuffix(recordedCwd, expectedSuffix) {
+			t.Errorf("agent process Cwd = %q, want to end with %q", recordedCwd, expectedSuffix)
+		}
+	})
+
+	t.Run("disabled uses WorkDir", func(t *testing.T) {
+		d, _, cwdFile, cleanup := newCwdTestDaemon(t)
+		defer cleanup()
+
+		task := newTask(false, "src")
+		result, err := d.runTask(context.Background(), task, "claude", 0, d.logger)
+		if err != nil {
+			t.Fatalf("runTask: %v", err)
+		}
+		if result.Status != "completed" {
+			t.Fatalf("runTask status = %q, want completed (comment=%q)", result.Status, result.Comment)
+		}
+
+		cwdData, err := os.ReadFile(cwdFile)
+		if err != nil {
+			t.Fatalf("read cwd file: %v", err)
+		}
+		recordedCwd := strings.TrimSpace(string(cwdData))
+		// When disabled, Cwd == WorkDir, and the suffix is just workdir.
+		if !strings.HasSuffix(recordedCwd, "workdir") {
+			t.Errorf("agent process Cwd = %q, want to end with %q", recordedCwd, "workdir")
+		}
+		// Ensure the subdirectory does NOT appear — the agent must not be in the subdir.
+		if strings.Contains(recordedCwd, filepath.Join("workdir", "src")) {
+			t.Errorf("agent process Cwd = %q, must not contain subdirectory 'src' when disabled", recordedCwd)
+		}
+	})
+}

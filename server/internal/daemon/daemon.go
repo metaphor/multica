@@ -4161,6 +4161,8 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		InitiatorEmail:                   task.InitiatorEmail,
 		WorkspaceContext:                 task.WorkspaceContext,
 		ConnectedApps:                    task.ConnectedApps,
+		EnableAgentWorkdir:               task.EnableAgentWorkdir,
+		AgentWorkdir:                     task.AgentWorkdir,
 	}
 
 	// Mark candidate env roots as active before any env work so the GC loop
@@ -4332,6 +4334,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if err := d.preCheckoutRepos(task, env, provider, agentName, taskLog); err != nil {
 		return TaskResult{}, err
 	}
+	taskCtx.WorkDir = env.WorkDir
 	// Belt-and-suspenders: also mark whatever root we ended up with, in case
 	// future changes diverge from PredictRootDir.
 	if env.RootDir != predictedRoot && env.RootDir != "" {
@@ -4626,7 +4629,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		idleWatchdogTimeout = d.cfg.OpenCodeIdleWatchdog
 	}
 	execOpts := agent.ExecOptions{
-		Cwd:                       env.WorkDir,
+		Cwd:                       env.Cwd,
 		Model:                     model,
 		ThreadName:                deriveTaskThreadName(task),
 		Timeout:                   d.cfg.AgentTimeout,

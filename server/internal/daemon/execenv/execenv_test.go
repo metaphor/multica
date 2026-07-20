@@ -5192,3 +5192,241 @@ func TestResolveAgentCwdDisabled(t *testing.T) {
 		t.Errorf("when EnableAgentWorkdir is false, Cwd = %q, want WorkDir %q", env.Cwd, env.WorkDir)
 	}
 }
+
+// TestPreCheckoutReposInMetaSkill verifies that when custom workdir is
+// enabled, the generated brief emits pre-checked-out repo paths and does
+// NOT contain `multica repo checkout` instructions.
+func TestPreCheckoutReposInMetaSkill(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	ctx := TaskContextForEnv{
+		IssueID:            "11111111-2222-3333-4444-555555555555",
+		EnableAgentWorkdir: true,
+		WorkDir:            "/some/workspace/workdir",
+		AgentWorkdir:       "src",
+		Repos: []RepoContextForEnv{
+			{URL: "https://github.com/org/repo-a", Description: "First repo"},
+			{URL: "https://github.com/org/repo-b"},
+		},
+	}
+
+	if _, err := InjectRuntimeConfig(dir, "claude", ctx); err != nil {
+		t.Fatalf("InjectRuntimeConfig: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("read CLAUDE.md: %v", err)
+	}
+	s := string(content)
+
+	// Should contain pre-checked-out paths.
+	for _, want := range []string{
+		"already checked out",
+		"no `multica repo checkout` needed",
+		"Your working directory is `/some/workspace/workdir/src`",
+		"checked out at `/some/workspace/workdir/repo-a`",
+		"accessible from your working directory as `../repo-a`",
+		"checked out at `/some/workspace/workdir/repo-b`",
+		"accessible as `../repo-b`",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("CLAUDE.md missing %q", want)
+		}
+	}
+
+	// The Repositories section should NOT contain checkout instructions
+	// (Available Commands is a separate section that still lists CLI commands).
+	reposStart := strings.Index(s, "## Repositories\n")
+	if reposStart < 0 {
+		t.Fatal("CLAUDE.md missing Repositories section")
+	}
+	rest := s[reposStart+len("## Repositories\n"):]
+	var reposEnd int
+	if nextSection := strings.Index(rest, "\n## "); nextSection >= 0 {
+		reposEnd = reposStart + len("## Repositories\n") + nextSection
+	} else {
+		reposEnd = len(s)
+	}
+	reposSection := s[reposStart:reposEnd]
+	if strings.Contains(reposSection, "to fetch") || strings.Contains(reposSection, "to fetch the code") {
+		t.Errorf("Repositories section should not contain checkout instruction when pre-checkout is enabled")
+	}
+}
+
+// TestPreCheckoutReposInMetaSkillDisabled verifies that when custom workdir
+// is disabled, the generated brief still contains `multica repo checkout`
+// instructions (backwards-compatible behavior).
+func TestPreCheckoutReposInMetaSkillDisabled(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	ctx := TaskContextForEnv{
+		IssueID:            "11111111-2222-3333-4444-555555555555",
+		EnableAgentWorkdir: false,
+		WorkDir:            "/some/workspace/workdir",
+		Repos: []RepoContextForEnv{
+			{URL: "https://github.com/org/repo-a", Description: "First repo"},
+		},
+	}
+
+	if _, err := InjectRuntimeConfig(dir, "claude", ctx); err != nil {
+		t.Fatalf("InjectRuntimeConfig: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("read CLAUDE.md: %v", err)
+	}
+	s := string(content)
+
+	// Repositories section should contain checkout instructions.
+	reposStart := strings.Index(s, "## Repositories\n")
+	if reposStart < 0 {
+		t.Fatal("CLAUDE.md missing Repositories section")
+	}
+	rest := s[reposStart+len("## Repositories\n"):]
+	var reposEnd int
+	if nextSection := strings.Index(rest, "\n## "); nextSection >= 0 {
+		reposEnd = reposStart + len("## Repositories\n") + nextSection
+	} else {
+		reposEnd = len(s)
+	}
+	reposSection := s[reposStart:reposEnd]
+	for _, want := range []string{
+		"multica repo checkout <url>",
+		"--ref <branch-or-sha>",
+	} {
+		if !strings.Contains(reposSection, want) {
+			t.Errorf("Repositories section missing %q", want)
+		}
+	}
+
+	// Repositories section should NOT contain pre-checked-out paths.
+	for _, absent := range []string{
+		"already checked out",
+		"no `multica repo checkout` needed",
+	} {
+		if strings.Contains(reposSection, absent) {
+			t.Errorf("Repositories section should not contain %q when pre-checkout is disabled", absent)
+		}
+	}
+}
+
+// TestPreCheckoutProjectResourcesInMetaSkill verifies that when custom
+// workdir is enabled, project context replaces `multica repo checkout`
+// with pre-checked-out paths for github_repo resources.
+func TestPreCheckoutProjectResourcesInMetaSkill(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	ctx := TaskContextForEnv{
+		IssueID:            "11111111-2222-3333-4444-555555555555",
+		ProjectID:          "22222222-3333-4444-5555-666666666666",
+		ProjectTitle:       "Project A",
+		EnableAgentWorkdir: true,
+		WorkDir:            "/some/workspace/workdir",
+		AgentWorkdir:       "src",
+		Repos: []RepoContextForEnv{
+			{URL: "https://github.com/org/repo-a"},
+		},
+		ProjectResources: []ProjectResourceForEnv{
+			{
+				ID:           "33333333-4444-5555-6666-777777777777",
+				ResourceType: "github_repo",
+				ResourceRef:  []byte(`{"url":"https://github.com/org/repo-a"}`),
+			},
+		},
+	}
+
+	if _, err := InjectRuntimeConfig(dir, "claude", ctx); err != nil {
+		t.Fatalf("InjectRuntimeConfig: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("read CLAUDE.md: %v", err)
+	}
+	s := string(content)
+
+	// Project resources should show pre-checked-out paths.
+	for _, want := range []string{
+		"already checked out and ready to use:",
+		"https://github.com/org/repo-a",
+		"/some/workspace/workdir/repo-a",
+		"../repo-a",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("CLAUDE.md missing %q in project context", want)
+		}
+	}
+
+	// Should NOT contain checkout instructions in project context.
+	if strings.Contains(s, "use `multica repo checkout <url>` to fetch the code") {
+		t.Errorf("CLAUDE.md should not contain `multica repo checkout` instruction in project context when pre-checkout is enabled")
+	}
+}
+
+// TestPreCheckoutChatWorkflow verifies that when custom workdir is
+// enabled with repos, the chat workflow replaces the checkout
+// instruction with a pre-checked-out note.
+func TestPreCheckoutChatWorkflow(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	ctx := TaskContextForEnv{
+		ChatSessionID:      "cafe-cafe-cafe-cafe",
+		EnableAgentWorkdir: true,
+		WorkDir:            "/some/workspace/workdir",
+		AgentWorkdir:       "src",
+		Repos: []RepoContextForEnv{
+			{URL: "https://github.com/org/repo-a"},
+		},
+	}
+
+	if _, err := InjectRuntimeConfig(dir, "claude", ctx); err != nil {
+		t.Fatalf("InjectRuntimeConfig: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("read CLAUDE.md: %v", err)
+	}
+	s := string(content)
+
+	// Chat workflow should reference pre-checked-out repos.
+	if !strings.Contains(s, "Repos are already checked out — see the Repositories section above") {
+		t.Errorf("CLAUDE.md missing pre-checkout note in chat workflow")
+	}
+
+	// Chat workflow should NOT contain checkout instruction.
+	if strings.Contains(s, "use `multica repo checkout <url>` to get the code") {
+		t.Errorf("CLAUDE.md should not contain `multica repo checkout` in chat workflow when pre-checkout is enabled")
+	}
+}
+
+// TestPreCheckoutChatWorkflowDisabled verifies that when custom workdir
+// is disabled, the chat workflow still has the legacy checkout instruction.
+func TestPreCheckoutChatWorkflowDisabled(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	ctx := TaskContextForEnv{
+		ChatSessionID:      "cafe-cafe-cafe-cafe",
+		EnableAgentWorkdir: false,
+		Repos: []RepoContextForEnv{
+			{URL: "https://github.com/org/repo-a"},
+		},
+	}
+
+	if _, err := InjectRuntimeConfig(dir, "claude", ctx); err != nil {
+		t.Fatalf("InjectRuntimeConfig: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("read CLAUDE.md: %v", err)
+	}
+	s := string(content)
+
+	// Chat workflow should have legacy checkout instruction.
+	if !strings.Contains(s, "use `multica repo checkout <url>` to get the code first") {
+		t.Errorf("CLAUDE.md missing legacy checkout instruction in chat workflow")
+	}
+}

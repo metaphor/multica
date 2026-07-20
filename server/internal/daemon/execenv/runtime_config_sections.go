@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -239,17 +240,31 @@ func writeCommentFormatting(b *strings.Builder) {
 // writeRepositories emits the Repositories section when at least one repo
 // is configured. The closing paragraph from the legacy version is dropped
 // (it re-stated the opening); intro is tightened into one line.
+// When EnableAgentWorkdir is set, repos are already pre-checked-out and the
+// section instructs the agent to find them as sibling directories.
 func writeRepositories(b *strings.Builder, ctx TaskContextForEnv) {
 	if len(ctx.Repos) == 0 {
 		return
 	}
 	b.WriteString("## Repositories\n\n")
-	b.WriteString("Available in this workspace — `multica repo checkout <url> [--ref <branch-or-sha>]` to fetch (creates a repository checkout on a dedicated branch).\n\n")
-	for _, repo := range ctx.Repos {
-		if repo.Description != "" {
-			fmt.Fprintf(b, "- %s — %s\n", repo.URL, repo.Description)
-		} else {
-			fmt.Fprintf(b, "- %s\n", repo.URL)
+	if ctx.EnableAgentWorkdir {
+		fmt.Fprintf(b, "These repositories are already checked out and ready to use — no `multica repo checkout` needed. Your working directory is `%s/%s`; repos below are sibling directories relative to your Cwd.\n\n", ctx.WorkDir, ctx.AgentWorkdir)
+		for _, repo := range ctx.Repos {
+			repoName := repoNameFromURL(repo.URL)
+			if repo.Description != "" {
+				fmt.Fprintf(b, "- %s — checked out at `%s/%s` (accessible from your working directory as `../%s`)\n", repo.URL, ctx.WorkDir, repoName, repoName)
+			} else {
+				fmt.Fprintf(b, "- %s — checked out at `%s/%s` (accessible as `../%s`)\n", repo.URL, ctx.WorkDir, repoName, repoName)
+			}
+		}
+	} else {
+		b.WriteString("Available in this workspace — `multica repo checkout <url> [--ref <branch-or-sha>]` to fetch (creates a repository checkout on a dedicated branch).\n\n")
+		for _, repo := range ctx.Repos {
+			if repo.Description != "" {
+				fmt.Fprintf(b, "- %s — %s\n", repo.URL, repo.Description)
+			} else {
+				fmt.Fprintf(b, "- %s\n", repo.URL)
+			}
 		}
 	}
 	b.WriteString("\n")
@@ -275,8 +290,26 @@ func writeProjectContext(b *strings.Builder, ctx TaskContextForEnv) {
 		for _, r := range ctx.ProjectResources {
 			fmt.Fprintf(b, "- %s\n", formatProjectResource(r))
 		}
-		b.WriteString("\nResources are pointers — open them only when relevant to the task. ")
-		b.WriteString("For `github_repo` resources, use `multica repo checkout <url>` to fetch the code. Add `--ref <branch-or-sha>` when a task or handoff names an exact revision.\n\n")
+		if ctx.EnableAgentWorkdir {
+			b.WriteString("\nResources are pointers — open them only when relevant to the task. ")
+			b.WriteString("`github_repo` resources are already checked out and ready to use:\n\n")
+			for _, r := range ctx.ProjectResources {
+				if r.ResourceType == "github_repo" {
+					var payload struct {
+						URL string `json:"url"`
+					}
+					_ = json.Unmarshal(r.ResourceRef, &payload)
+					if payload.URL != "" {
+						repoName := repoNameFromURL(payload.URL)
+						fmt.Fprintf(b, "- %s → `%s/%s` (accessible from your working directory as `../%s`)\n", payload.URL, ctx.WorkDir, repoName, repoName)
+					}
+				}
+			}
+			b.WriteString("\n")
+		} else {
+			b.WriteString("\nResources are pointers — open them only when relevant to the task. ")
+			b.WriteString("For `github_repo` resources, use `multica repo checkout <url>` to fetch the code. Add `--ref <branch-or-sha>` when a task or handoff names an exact revision.\n\n")
+		}
 	} else {
 		b.WriteString("This project has no resources attached yet.\n\n")
 	}
@@ -323,14 +356,18 @@ func writeWorkflowHeader(b *strings.Builder) {
 }
 
 // writeWorkflowChat emits the chat-mode workflow.
-func writeWorkflowChat(b *strings.Builder) {
+func writeWorkflowChat(b *strings.Builder, ctx TaskContextForEnv) {
 	b.WriteString("**You are in chat mode.** A user is messaging you directly in a chat window.\n\n")
 	b.WriteString("- Respond conversationally and helpfully to the user's message\n")
 	b.WriteString("- You have full access to the `multica` CLI to look up issues, workspace info, members, agents, etc.\n")
 	b.WriteString("- If asked about issues, use `multica issue list --output json` or `multica issue get <id> --output json`\n")
 	b.WriteString("- If asked about the workspace, use `multica workspace get --output json`\n")
 	b.WriteString("- If asked to perform actions (create issues, update status, etc.), use the appropriate CLI commands\n")
-	b.WriteString("- If the task requires code changes, use `multica repo checkout <url>` to get the code first. Use `--ref <branch-or-sha>` when you need an exact revision\n")
+	if ctx.EnableAgentWorkdir && len(ctx.Repos) > 0 {
+		b.WriteString("- Repos are already checked out — see the Repositories section above\n")
+	} else {
+		b.WriteString("- If the task requires code changes, use `multica repo checkout <url>` to get the code first. Use `--ref <branch-or-sha>` when you need an exact revision\n")
+	}
 	b.WriteString("- Keep responses concise and direct\n\n")
 }
 
@@ -616,7 +653,7 @@ func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
 	writeWorkflowHeader(&b)
 	switch kind {
 	case kindChat:
-		writeWorkflowChat(&b)
+		writeWorkflowChat(&b, ctx)
 	case kindQuickCreate:
 		writeWorkflowQuickCreate(&b)
 	case kindAutopilotRunOnly:
