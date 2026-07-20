@@ -95,3 +95,44 @@
 - The `writeAvailableCommands` section (which lists all CLI commands) intentionally still includes `multica repo checkout` even when custom workdir is enabled — the CLI command still exists and the agent may use it for non-pre-checked-out repos.
 - Tests verify section-level content (not file-level) to avoid false negatives from the Available Commands section.
 - Five new tests added: `TestPreCheckoutReposInMetaSkill`, `TestPreCheckoutReposInMetaSkillDisabled`, `TestPreCheckoutProjectResourcesInMetaSkill`, `TestPreCheckoutChatWorkflow`, `TestPreCheckoutChatWorkflowDisabled`.
+
+## Task 10: Adjust OpenClaw and Cursor sidecar configs to use resolved Cwd
+
+### Implementation notes
+
+- Changed two call sites in `execenv.go` Prepare to pass `env.Cwd` instead of `workDir`:
+  - Line 443: `prepareCursorMcpConfig(envRoot, env.Cwd, ...)` — Cursor `.cursor/mcp.json` now lands under the agent's Cwd when custom workdir is enabled.
+  - Line 461: `prepareOpenclawConfig(envRoot, env.Cwd, ...)` — OpenClaw wrapper pins `agents.defaults.workspace` (and per-agent workspace) to the agent's Cwd.
+- Used `env.Cwd` unconditionally rather than a conditional because `env.Cwd` is initialized to `workDir` at Prepare's start and only diverges inside the `if params.EnableAgentWorkdir` block. This is the same pattern as Tasks 7 and 8.
+- Reuse path (lines 678, 699) was intentionally NOT changed because `shouldReusePriorWorkdir` returns false for custom-workdir tasks, making the Reuse code path unreachable when the feature is on. When it is reached (disabled mode), `env.Cwd == params.WorkDir` by construction.
+- No signature changes to `prepareCursorMcpConfig` or `prepareOpenclawConfig` — the second parameter already accepts a path, and we simply pass `env.Cwd` instead of `workDir`.
+
+### Test notes
+
+- Added four new tests in `execenv_test.go`:
+  - `TestPrepareOpenclawConfigUsesCwdWhenWorkdirEnabled`: Uses the existing `installOpenclawStub` pattern to synthesize a per-task wrapper, then asserts `agents.defaults.workspace` equals `env.Cwd` (not `env.WorkDir`), and verifies Cwd ends with the subdirectory suffix.
+  - `TestPrepareOpenclawConfigUsesWorkDirWhenDisabled`: Same stub pattern, asserts workspace equals `env.WorkDir` (which equals Cwd by default).
+  - `TestPrepareCursorMcpConfigUsesCwdWhenWorkdirEnabled`: Calls `Prepare` with cursor provider + managed mcp_config + `EnableAgentWorkdir: true`, then verifies `.cursor/mcp.json` exists under `env.Cwd` and NOT under `env.WorkDir`.
+  - `TestPrepareCursorMcpConfigUsesWorkDirWhenDisabled`: Same but with feature disabled, verifies `.cursor/mcp.json` under `env.WorkDir`.
+
+### Key decisions
+
+- OpenClaw's `prepareOpenclawConfig` is complex (CLI delegation, $include wrapping, managed mcp_config snapshot isolation). Rather than refactoring the function to accept an explicit workspace parameter, the simplest change was at the single call site — pass `env.Cwd` instead of `workDir`. The function's internal `buildPerTaskOpenclawConfig` uses the second parameter as the workspace value for both `agents.defaults.workspace` and `agents.list[].workspace`, so this correctly targets both.
+- The Cursor test verifies the `.cursor/mcp.json` file location (under Cwd or WorkDir) rather than the approval/payload content, since `cursorProjectRoot` derives from the passed directory and the approval keys depend on the project root. The file location is the user-visible effect.
+- Hermes and Codex sidecar configs were NOT touched — they manage provider-specific home/overlays and don't pin workspace directories.
+
+## Task 12: Update core project types and mutation hooks
+
+### Implementation notes
+
+- `Project.settings` changed from required (`settings: Record<string, unknown>`) to optional (`settings?: Record<string, unknown>`) for backward compatibility. The DB column is `NOT NULL DEFAULT '{}'` so the API always returns it, but making it optional is defensive.
+- `UpdateProjectRequest.settings` changed from `settings?: Record<string, unknown>` to `settings?: Record<string, unknown> | null`. The `| null` is needed to allow callers to send `{ settings: null }` to clear the settings — the Go handler treats `nil` as "don't update" and only clears when the key is present with a null value.
+- The mutation hook `useUpdateProject` needs a normalization step in `onMutate`: `settings ?? undefined` collapses `null` to `undefined` because `Project.settings` excludes `null` (the server always returns `{}` after clearing, never `null`). Without this, the spread `{ ...old, ...data }` would assign `null` to `Project.settings`, which violates its type.
+- The `api.updateProject` method in `packages/core/api/client.ts` already serializes the entire `UpdateProjectRequest` body with `JSON.stringify(data)` — no changes needed to the API client.
+- `CreateProjectRequest` was not modified — it does not include `settings` (matching the Go handler, which does not accept settings on project creation).
+
+### Key decisions
+
+- Used `?? undefined` (nullish coalescing with `undefined`) rather than a ternary or `delete` for the null→undefined normalization. TypeScript correctly narrows `data.settings ?? undefined` to `Record<string, unknown> | undefined`, making the spread type-safe without a cast.
+- Did NOT add a typed `ProjectSettings` interface (e.g., `{ enable_agent_workdir?: boolean; agent_workdir?: string }`) — the plan specifies `Record<string, unknown>` to keep settings extensible, matching the workspace settings pattern.
+- Did NOT add settings support to `CreateProjectRequest` — the create-project flow doesn't need it (Task 11 only adds the toggle to the detail sidebar).

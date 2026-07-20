@@ -35,11 +35,15 @@ export function useUpdateProject() {
       qc.cancelQueries({ queryKey: projectKeys.list(wsId) });
       const prevList = qc.getQueryData<ListProjectsResponse>(projectKeys.list(wsId));
       const prevDetail = qc.getQueryData<Project>(projectKeys.detail(wsId, id));
+      // When settings is sent as null (clear), the server returns {} — but
+      // Project.settings excludes null, so collapse null→undefined for the
+      // optimistic snapshot (?? undefined does this in one shot).
+      const optimistic = { ...data, settings: data.settings ?? undefined };
       qc.setQueryData<ListProjectsResponse>(projectKeys.list(wsId), (old) =>
-        old ? { ...old, projects: old.projects.map((p) => (p.id === id ? { ...p, ...data } : p)) } : old,
+        old ? { ...old, projects: old.projects.map((p) => (p.id === id ? { ...p, ...optimistic } : p)) } : old,
       );
       qc.setQueryData<Project>(projectKeys.detail(wsId, id), (old) =>
-        old ? { ...old, ...data } : old,
+        old ? { ...old, ...optimistic } : old,
       );
       return { prevList, prevDetail, id };
     },

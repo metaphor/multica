@@ -21,7 +21,7 @@ export interface Project {
   issue_count: number;
   done_count: number;
   resource_count: number;
-  settings: Record<string, unknown>;
+  settings?: Record<string, unknown>;
 }
 
 export interface CreateProjectRequest {
@@ -50,7 +50,7 @@ export interface UpdateProjectRequest {
   // Omit the key to leave the date untouched; send null (or "") to clear it.
   start_date?: string | null;
   due_date?: string | null;
-  settings?: Record<string, unknown>;
+  settings?: Record<string, unknown> | null;
 }
 
 export interface ListProjectsResponse {
