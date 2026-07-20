@@ -4922,6 +4922,102 @@ func TestPrepareAgentCwd(t *testing.T) {
 	})
 }
 
+// TestPrepareContextFilesWithAgentCwd verifies that writeContextFiles and
+// InjectRuntimeConfig write to env.Cwd when EnableAgentWorkdir is set, and to
+// env.WorkDir when disabled.
+func TestPrepareContextFilesWithAgentCwd(t *testing.T) {
+	t.Parallel()
+
+	workspacesRoot := t.TempDir()
+	baseParams := func(taskID string) PrepareParams {
+		return PrepareParams{
+			WorkspacesRoot: workspacesRoot,
+			WorkspaceID:    "ws-context-cwd",
+			TaskID:         taskID,
+			AgentName:      "Context Cwd Agent",
+			Task:           TaskContextForEnv{IssueID: "issue-1"},
+		}
+	}
+
+	t.Run("writes context files to Cwd when custom workdir enabled", func(t *testing.T) {
+		t.Parallel()
+		p := baseParams("c1b2c3d4-e5f6-7890-abcd-ef1234567890")
+		p.EnableAgentWorkdir = true
+		p.AgentWorkdir = "src/project"
+
+		env, err := Prepare(p, testLogger())
+		if err != nil {
+			t.Fatalf("Prepare: %v", err)
+		}
+		if env.Cwd == env.WorkDir {
+			t.Fatal("expected Cwd != WorkDir with custom workdir enabled")
+		}
+
+		// Context files should exist under Cwd.
+		ctxPath := filepath.Join(env.Cwd, ".agent_context", "issue_context.md")
+		if _, err := os.Stat(ctxPath); os.IsNotExist(err) {
+			t.Errorf(".agent_context/issue_context.md missing under Cwd: %s", env.Cwd)
+		}
+		markerPath := filepath.Join(env.Cwd, ".multica", "daemon_task_context.json")
+		if _, err := os.Stat(markerPath); os.IsNotExist(err) {
+			t.Errorf("daemon_task_context.json missing under Cwd: %s", env.Cwd)
+		}
+
+		// Context files should NOT exist under WorkDir (the root workdir is
+		// distinct from Cwd when custom workdir is enabled).
+		rootCtxPath := filepath.Join(env.WorkDir, ".agent_context", "issue_context.md")
+		if _, err := os.Stat(rootCtxPath); !os.IsNotExist(err) {
+			t.Error(".agent_context/issue_context.md should not exist under WorkDir root")
+		}
+		rootMarkerPath := filepath.Join(env.WorkDir, ".multica", "daemon_task_context.json")
+		if _, err := os.Stat(rootMarkerPath); !os.IsNotExist(err) {
+			t.Error("daemon_task_context.json should not exist under WorkDir root")
+		}
+
+		// InjectRuntimeConfig should write to Cwd.
+		if _, err := InjectRuntimeConfig(env.Cwd, "claude", TaskContextForEnv{IssueID: "issue-1"}); err != nil {
+			t.Fatalf("InjectRuntimeConfig to Cwd: %v", err)
+		}
+		claudeMdPath := filepath.Join(env.Cwd, "CLAUDE.md")
+		if _, err := os.Stat(claudeMdPath); os.IsNotExist(err) {
+			t.Error("CLAUDE.md missing under Cwd after InjectRuntimeConfig")
+		}
+	})
+
+	t.Run("writes context files to WorkDir when custom workdir disabled", func(t *testing.T) {
+		t.Parallel()
+		p := baseParams("d1b2c3d4-e5f6-7890-abcd-ef1234567891")
+		// EnableAgentWorkdir defaults to false.
+
+		env, err := Prepare(p, testLogger())
+		if err != nil {
+			t.Fatalf("Prepare: %v", err)
+		}
+		if env.Cwd != env.WorkDir {
+			t.Fatalf("expected Cwd == WorkDir when disabled, got Cwd=%q WorkDir=%q", env.Cwd, env.WorkDir)
+		}
+
+		// Context files should exist under WorkDir (which equals Cwd).
+		ctxPath := filepath.Join(env.WorkDir, ".agent_context", "issue_context.md")
+		if _, err := os.Stat(ctxPath); os.IsNotExist(err) {
+			t.Error(".agent_context/issue_context.md missing under WorkDir")
+		}
+		markerPath := filepath.Join(env.WorkDir, ".multica", "daemon_task_context.json")
+		if _, err := os.Stat(markerPath); os.IsNotExist(err) {
+			t.Error("daemon_task_context.json missing under WorkDir")
+		}
+
+		// InjectRuntimeConfig should write to WorkDir.
+		if _, err := InjectRuntimeConfig(env.WorkDir, "claude", TaskContextForEnv{IssueID: "issue-1"}); err != nil {
+			t.Fatalf("InjectRuntimeConfig to WorkDir: %v", err)
+		}
+		claudeMdPath := filepath.Join(env.WorkDir, "CLAUDE.md")
+		if _, err := os.Stat(claudeMdPath); os.IsNotExist(err) {
+			t.Error("CLAUDE.md missing under WorkDir after InjectRuntimeConfig")
+		}
+	})
+}
+
 // TestReuseAgentCwd verifies that Reuse also populates Environment.Cwd.
 func TestReuseAgentCwd(t *testing.T) {
 	t.Parallel()

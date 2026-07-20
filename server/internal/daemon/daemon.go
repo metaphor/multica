@@ -4379,7 +4379,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}
 
 	// Inject runtime-specific config (meta skill) so the agent discovers .agent_context/.
-	runtimeBrief, err := execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
+	// Write to env.Cwd so the runtime brief lands in the agent's effective
+	// working directory when EnableAgentWorkdir is set. env.Cwd falls back
+	// to env.WorkDir when the feature is off, so behavior is unchanged for
+	// non-custom-workdir tasks.
+	runtimeBrief, err := execenv.InjectRuntimeConfig(env.Cwd, provider, taskCtx)
 	if err != nil {
 		d.logger.Warn("execenv: inject runtime config failed (non-fatal)", "error", err)
 	}

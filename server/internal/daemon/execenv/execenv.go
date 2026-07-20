@@ -354,6 +354,10 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 	}
 
 	// Write context files into workdir (skills go to provider-native paths).
+	// When EnableAgentWorkdir is set, write to env.Cwd so the agent sees
+	// context files in its effective working directory, not the workdir
+	// root. env.Cwd falls back to workDir when the feature is off, so
+	// behavior is unchanged for non-custom-workdir tasks.
 	// Track every file/dir we create in a manifest so CleanupSidecars can
 	// roll a local_directory workdir back to its pre-Prepare state. Cloud
 	// tasks don't need the manifest (the GC loop wipes envRoot wholesale),
@@ -361,7 +365,7 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 	// and avoids a conditional that would silently disable cleanup if the
 	// local_directory detection logic ever drifts.
 	manifest := &sidecarManifest{}
-	if err := writeContextFiles(workDir, params.Provider, params.Task, manifest); err != nil {
+	if err := writeContextFiles(env.Cwd, params.Provider, params.Task, manifest); err != nil {
 		return nil, fmt.Errorf("execenv: write context files: %w", err)
 	}
 
