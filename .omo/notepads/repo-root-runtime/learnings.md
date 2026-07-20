@@ -203,3 +203,22 @@
 - Did not touch the create-project flow.
 - Added `agent_workdir_error` as a fifth i18n key to keep the validation message localized, even though the task list only named the four primary keys.
 
+## Task 16: Full verification pipeline
+
+### Findings
+
+- `pnpm typecheck` — all 6 packages pass (cached).
+- `pnpm test` — all 2742 tests in `@multica/views` pass, all 8 Turborepo tasks successful.
+- Go tests (`make test`): `daemon` and `repocache` packages pass. `execenv` and `handler` have pre-existing failures unrelated to this feature (see issues.md).
+- All feature-specific tests (`TestResolveAgentCwd`, `TestPrepareAgentCwd`, `TestPrepareContextFilesWithAgentCwd`, `TestPrepareCursorMcpConfigUsesCwdWhenWorkdirEnabled`, `TestPrepareOpenclawConfig*`, `TestRunTaskSetsAgentCwd`, `TestPreCheckoutRepos`, `TestRunTaskPreChecksOutReposAndSetsCwd`, `TestUpdateProjectSettings`) pass.
+- `go vet` and `gofmt` are clean on changed files.
+
+### Regression fixed
+
+- `TestUpdateProjectSettings/clears_settings_by_sending_null` was a regression from Task 2. The handler passed `nil` (empty `[]byte`) to `COALESCE(sqlc.narg('settings'), settings)` in the SQL, which treated NULL as "keep existing value" instead of "clear to `{}`". Fixed by passing `[]byte("{}")` instead of `nil` when settings are explicitly cleared.
+
+### Key decisions
+
+- The `nil` → `[]byte("{}")` change mirrors how the workspace settings handler clears settings — it also sends `'{}'` bytes, not NULL, for the same COALESCE-based SQL pattern.
+- All other failures in `make test` are pre-existing (GitHub schema mismatch, ngrok URL config, heartbeat timing, race conditions under `-race`). None are caused by the agent workdir feature.
+

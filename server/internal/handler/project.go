@@ -598,7 +598,7 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 			s, _ := json.Marshal(req.Settings)
 			params.Settings = s
 		} else {
-			params.Settings = nil
+			params.Settings = []byte("{}")
 		}
 	}
 	project, err := h.Queries.UpdateProject(r.Context(), params)
