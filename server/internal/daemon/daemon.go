@@ -3687,6 +3687,13 @@ func shouldReusePriorWorkdir(task Task, localAssignment *localDirectoryAssignmen
 	if task.PriorWorkDir == "" || localAssignment != nil {
 		return false
 	}
+	// When the task overrides the agent's Cwd via the enable_agent_workdir
+	// contract, the workdir root itself is not the agent's playground —
+	// reuse would keep a stale subdirectory pointer while the task expects
+	// a fresh Cwd resolution each run.
+	if task.EnableAgentWorkdir {
+		return false
+	}
 	if !task.IsLeaderTask {
 		return true
 	}
@@ -4254,6 +4261,8 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			HermesSourceHome:      hermesSourceHome,
 			HermesSourceMustExist: hermesSourceMustExist,
 			HermesEnv:             hermesEnv,
+			EnableAgentWorkdir:    task.EnableAgentWorkdir,
+			AgentWorkdir:          task.AgentWorkdir,
 			Task:                  taskCtx,
 		}
 		if localAssignment != nil {

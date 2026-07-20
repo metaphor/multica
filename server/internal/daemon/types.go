@@ -138,6 +138,13 @@ type Task struct {
 	// Empty or non-task-scoped values are fatal for writable agent tasks; the
 	// daemon must not fall back to its own token. See MUL-3292.
 	AuthToken string `json:"auth_token,omitempty"`
+	// EnableAgentWorkdir, when true, tells the daemon to set the agent's Cwd
+	// to AgentWorkdir (resolved relative to the per-task workdir) instead of
+	// the workdir root. When false or empty, the agent runs with Cwd = WorkDir
+	// as before. This gives the task author control over the agent's starting
+	// directory inside the workspace checkout.
+	EnableAgentWorkdir bool   `json:"enable_agent_workdir,omitempty"`
+	AgentWorkdir       string `json:"agent_workdir,omitempty"`
 }
 
 // ChatAttachmentMeta is the structured attachment metadata the daemon

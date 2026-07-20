@@ -4837,3 +4837,106 @@ func TestEnvironmentCleanupStandardModeRemovesWorkdir(t *testing.T) {
 		t.Fatalf("output/ removed by partial cleanup: %v", err)
 	}
 }
+
+// TestPrepareAgentCwd exercises the EnableAgentWorkdir / AgentWorkdir
+// contract on PreparePath: Cwd defaults to WorkDir, resolves relative
+// AgentWorkdir against WorkDir, and keeps absolute paths verbatim.
+func TestPrepareAgentCwd(t *testing.T) {
+	t.Parallel()
+
+	workspacesRoot := t.TempDir()
+	baseParams := func(taskID string) PrepareParams {
+		return PrepareParams{
+			WorkspacesRoot: workspacesRoot,
+			WorkspaceID:    "ws-cwd",
+			TaskID:         taskID,
+			AgentName:      "Cwd Agent",
+			Task:           TaskContextForEnv{IssueID: "issue-1"},
+		}
+	}
+
+	t.Run("defaults to WorkDir", func(t *testing.T) {
+		t.Parallel()
+		p := baseParams("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+		env, err := Prepare(p, testLogger())
+		if err != nil {
+			t.Fatalf("Prepare: %v", err)
+		}
+		if env.Cwd != env.WorkDir {
+			t.Errorf("Cwd = %q, want WorkDir %q", env.Cwd, env.WorkDir)
+		}
+	})
+
+	t.Run("resolves relative AgentWorkdir", func(t *testing.T) {
+		t.Parallel()
+		p := baseParams("b1b2c3d4-e5f6-7890-abcd-ef1234567891")
+		p.EnableAgentWorkdir = true
+		p.AgentWorkdir = "src/project"
+		env, err := Prepare(p, testLogger())
+		if err != nil {
+			t.Fatalf("Prepare: %v", err)
+		}
+		want := filepath.Join(env.WorkDir, "src/project")
+		if env.Cwd != want {
+			t.Errorf("Cwd = %q, want %q", env.Cwd, want)
+		}
+	})
+
+	t.Run("keeps absolute AgentWorkdir", func(t *testing.T) {
+		t.Parallel()
+		p := baseParams("c1b2c3d4-e5f6-7890-abcd-ef1234567892")
+		p.EnableAgentWorkdir = true
+		p.AgentWorkdir = "/tmp/agent-here"
+		env, err := Prepare(p, testLogger())
+		if err != nil {
+			t.Fatalf("Prepare: %v", err)
+		}
+		if env.Cwd != "/tmp/agent-here" {
+			t.Errorf("Cwd = %q, want /tmp/agent-here", env.Cwd)
+		}
+	})
+
+	t.Run("empty AgentWorkdir keeps default", func(t *testing.T) {
+		t.Parallel()
+		p := baseParams("d1b2c3d4-e5f6-7890-abcd-ef1234567893")
+		p.EnableAgentWorkdir = true
+		p.AgentWorkdir = ""
+		env, err := Prepare(p, testLogger())
+		if err != nil {
+			t.Fatalf("Prepare: %v", err)
+		}
+		if env.Cwd != env.WorkDir {
+			t.Errorf("Cwd = %q, want WorkDir %q", env.Cwd, env.WorkDir)
+		}
+	})
+}
+
+// TestReuseAgentCwd verifies that Reuse also populates Environment.Cwd.
+func TestReuseAgentCwd(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	env, err := Prepare(PrepareParams{
+		WorkspacesRoot: root,
+		WorkspaceID:    "ws-reuse-cwd",
+		TaskID:         "e1b2c3d4-e5f6-7890-abcd-ef1234567894",
+		AgentName:      "Reuse Cwd Agent",
+		Task:           TaskContextForEnv{IssueID: "issue-1"},
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	defer env.Cleanup(true)
+
+	reused := Reuse(ReuseParams{
+		WorkspacesRoot: root,
+		WorkDir:        env.WorkDir,
+		Task:           TaskContextForEnv{IssueID: "issue-1"},
+	}, testLogger())
+	if reused == nil {
+		t.Fatal("Reuse returned nil for an existing workdir")
+	}
+	if reused.Cwd != reused.WorkDir {
+		t.Errorf("Cwd = %q, want WorkDir %q", reused.Cwd, reused.WorkDir)
+	}
+}

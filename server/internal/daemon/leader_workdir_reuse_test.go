@@ -247,6 +247,26 @@ func TestShouldReusePriorWorkdirSquadLeaderRejectsSymlinkEscape(t *testing.T) {
 	}
 }
 
+func TestShouldReusePriorWorkdirRejectsWhenEnableAgentWorkdir(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	workDir := filepath.Join(root, "ws-leader", "12345678", "workdir")
+	writeLeaderTaskMarker(t, workDir, "agent-leader", "issue-leader")
+	writeLeaderManagedEnvProvenance(t, workDir, "ws-leader", "issue-leader", "agent-leader")
+
+	task := leaderReuseTestTask("task-agent-workdir")
+	task.PriorWorkDir = workDir
+	// EnableAgentWorkdir replaces the agent's Cwd with a subdirectory; the
+	// workdir root is not the agent's playground, so reuse must be refused.
+	task.EnableAgentWorkdir = true
+	task.AgentWorkdir = "src"
+
+	if shouldReusePriorWorkdir(task, nil, root) {
+		t.Fatal("shouldReusePriorWorkdir returned true for a task with EnableAgentWorkdir set")
+	}
+}
+
 func newLeaderReuseTestDaemon(t *testing.T) (*Daemon, string, func()) {
 	t.Helper()
 

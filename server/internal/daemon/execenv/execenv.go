@@ -68,6 +68,15 @@ type PrepareParams struct {
 	// substituted. Used by the local_directory project_resource flow
 	// (MUL-2663). When set, the envRoot/workdir directory is not created.
 	LocalWorkDir string
+	// EnableAgentWorkdir tells Prepare to set the agent's Cwd to a
+	// subdirectory of the workdir instead of the workdir root. When true
+	// and AgentWorkdir is non-empty, it is resolved relative to WorkDir
+	// (or treated as absolute if it already is).
+	EnableAgentWorkdir bool
+	// AgentWorkdir is the agent's starting directory relative to (or an
+	// absolute path within) the per-task workdir. Only consulted when
+	// EnableAgentWorkdir is true; an empty value keeps Cwd = WorkDir.
+	AgentWorkdir string
 	// HermesSourceHome is the shared Hermes home the per-task overlay is seeded
 	// from — resolved by the daemon via execenv.ResolveHermesProfile so it honors
 	// the agent's custom_env HERMES_HOME and any -p/--profile or sticky selection.
@@ -187,6 +196,11 @@ type Environment struct {
 	// ({RootDir}/workdir/); when the task is bound to a local_directory
 	// project_resource, it is the user's path instead. See LocalDirectory.
 	WorkDir string
+	// Cwd is the agent's effective working directory. It defaults to
+	// WorkDir; when EnableAgentWorkdir is true and AgentWorkdir is
+	// non-empty, it resolves AgentWorkdir relative to WorkDir so the
+	// agent starts in a subdirectory of the workspace checkout.
+	Cwd string
 	// LocalDirectory is true when WorkDir points at a user-supplied path
 	// outside RootDir (the local_directory flow). Callers that key behavior
 	// on "may I remove WorkDir as scratch?" must check this — for example
@@ -297,8 +311,18 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 	env := &Environment{
 		RootDir:        envRoot,
 		WorkDir:        workDir,
+		Cwd:            workDir,
 		LocalDirectory: params.LocalWorkDir != "",
 		logger:         logger,
+	}
+	// When the task asks for a custom agent Cwd, resolve it relative to the
+	// workdir (or keep it verbatim when it is already absolute).
+	if params.EnableAgentWorkdir && params.AgentWorkdir != "" {
+		cwd := params.AgentWorkdir
+		if !filepath.IsAbs(cwd) {
+			cwd = filepath.Join(workDir, cwd)
+		}
+		env.Cwd = cwd
 	}
 
 	// Write context files into workdir (skills go to provider-native paths).
@@ -489,6 +513,7 @@ func Reuse(params ReuseParams, logger *slog.Logger) *Environment {
 	env := &Environment{
 		RootDir:        rootDir,
 		WorkDir:        params.WorkDir,
+		Cwd:            params.WorkDir,
 		LocalDirectory: params.LocalDirectory,
 		logger:         logger,
 	}
