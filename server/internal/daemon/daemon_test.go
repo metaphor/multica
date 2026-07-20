@@ -4018,6 +4018,114 @@ func TestPreCheckoutRepos(t *testing.T) {
 	})
 }
 
+// TestRunTaskPreChecksOutReposAndSetsCwd verifies the combined custom-workdir
+// launch path: when EnableAgentWorkdir is true, the daemon calls
+// repoCache.CreateWorktree for each github_repo before launching the agent, and
+// the spawned agent process runs with Cwd set to the resolved agent workdir.
+func TestRunTaskPreChecksOutReposAndSetsCwd(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+
+	testDir := t.TempDir()
+	fakeBin := filepath.Join(testDir, "claude")
+	cwdFile := filepath.Join(testDir, "claude-cwd.txt")
+	script := `#!/bin/sh
+pwd > "` + cwdFile + `"
+IFS= read -r _
+printf '%s\n' '{"type":"system","session_id":"session-cwd-test"}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id":"session-cwd-test","result":"done"}'
+`
+	if err := os.WriteFile(fakeBin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake agent: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	mock := &mockRepoCache{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	d := &Daemon{
+		client:         NewClient(srv.URL),
+		logger:         logger,
+		repoCache:      mock,
+		workspaces:     map[string]*workspaceState{"ws-cwd-test": {}},
+		runtimeIndex:   map[string]Runtime{"rt-cwd-test": {ID: "rt-cwd-test", Provider: "claude"}},
+		activeEnvRoots: make(map[string]int),
+		cfg: Config{
+			WorkspacesRoot: t.TempDir(),
+			AgentTimeout:   30 * time.Second,
+			ServerBaseURL:  srv.URL,
+			Agents: map[string]AgentEntry{
+				"claude": {Path: fakeBin},
+			},
+		},
+	}
+
+	task := Task{
+		ID:                 "task-cwd-test",
+		WorkspaceID:        "ws-cwd-test",
+		RuntimeID:          "rt-cwd-test",
+		IssueID:            "issue-cwd-test",
+		AgentID:            "agent-cwd-test",
+		AuthToken:          "mat_cwd_test",
+		EnableAgentWorkdir: true,
+		AgentWorkdir:       "src",
+		Repos: []RepoData{
+			{URL: "https://github.com/org/repo-a.git"},
+			{URL: "https://github.com/org/repo-b.git"},
+		},
+		Agent: &AgentData{
+			ID:   "agent-cwd-test",
+			Name: "cwd-test-agent",
+		},
+	}
+
+	result, err := d.runTask(context.Background(), task, "claude", 0, d.logger)
+	if err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("runTask status = %q, want completed (comment=%q)", result.Status, result.Comment)
+	}
+
+	if len(mock.createWorktreeCalls) != 2 {
+		t.Fatalf("CreateWorktree calls = %d, want 2", len(mock.createWorktreeCalls))
+	}
+	wantURLs := []string{"https://github.com/org/repo-a.git", "https://github.com/org/repo-b.git"}
+	for i, wantURL := range wantURLs {
+		got := mock.createWorktreeCalls[i]
+		if got.RepoURL != wantURL {
+			t.Errorf("call %d RepoURL = %q, want %q", i, got.RepoURL, wantURL)
+		}
+		if got.WorkspaceID != "ws-cwd-test" {
+			t.Errorf("call %d WorkspaceID = %q, want ws-cwd-test", i, got.WorkspaceID)
+		}
+		if got.WorkDir == "" {
+			t.Errorf("call %d WorkDir is empty", i)
+		}
+		if got.AgentName != "cwd-test-agent" {
+			t.Errorf("call %d AgentName = %q, want cwd-test-agent", i, got.AgentName)
+		}
+		if got.TaskID != "task-cwd-test" {
+			t.Errorf("call %d TaskID = %q, want task-cwd-test", i, got.TaskID)
+		}
+	}
+
+	cwdData, err := os.ReadFile(cwdFile)
+	if err != nil {
+		t.Fatalf("read cwd file: %v", err)
+	}
+	recordedCwd := strings.TrimSpace(string(cwdData))
+	expectedSuffix := filepath.Join("workdir", "src")
+	if !strings.HasSuffix(recordedCwd, expectedSuffix) {
+		t.Errorf("agent process Cwd = %q, want to end with %q", recordedCwd, expectedSuffix)
+	}
+}
+
 // TestRunTaskSetsAgentCwd verifies that when EnableAgentWorkdir is set the
 // agent process runs with Cwd set to env.Cwd (the resolved subdirectory), and
 // when disabled the agent runs in WorkDir as before.

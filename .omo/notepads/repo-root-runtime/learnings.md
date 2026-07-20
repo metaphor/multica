@@ -121,6 +121,27 @@
 - The Cursor test verifies the `.cursor/mcp.json` file location (under Cwd or WorkDir) rather than the approval/payload content, since `cursorProjectRoot` derives from the passed directory and the approval keys depend on the project root. The file location is the user-visible effect.
 - Hermes and Codex sidecar configs were NOT touched — they manage provider-specific home/overlays and don't pin workspace directories.
 
+## Task 13: Verify Cwd resolution unit test coverage
+
+### Findings
+
+- The `TestResolveAgentCwd` table-driven test added in Task 5 already contains 10 subtests covering all required acceptance criteria:
+  - valid relative paths: "valid relative path accepted", "nested relative path accepted"
+  - `..` segments: "dot-dot segment falls back", "dot-dot in nested path falls back"
+  - absolute paths: "absolute path falls back"
+  - empty string: "empty string with enable=true falls back"
+  - whitespace-only: "whitespace-only falls back"
+  - paths that clean to `.`: "dot resolves to root, falls back"
+- Paths that escape `WorkDir` are covered by the `..` segment rejection cases, which are the canonical escape vectors. The earlier `TestPrepareAgentCwd` also covers the absolute/empty fallbacks.
+- `TestResolveAgentCwdDisabled` confirms the feature toggle is respected.
+- No new tests were needed; the task is already complete.
+
+### Verification
+
+- `go test ./internal/daemon/execenv/...` passes: `ok github.com/multica-ai/multica/server/internal/daemon/execenv 1.705s`
+- `go vet ./internal/daemon/execenv/...` reports no issues.
+- `gofmt -l internal/daemon/execenv/execenv_test.go internal/daemon/execenv/execenv.go` reports no formatting issues.
+
 ## Task 12: Update core project types and mutation hooks
 
 ### Implementation notes
@@ -136,3 +157,23 @@
 - Used `?? undefined` (nullish coalescing with `undefined`) rather than a ternary or `delete` for the null→undefined normalization. TypeScript correctly narrows `data.settings ?? undefined` to `Record<string, unknown> | undefined`, making the spread type-safe without a cast.
 - Did NOT add a typed `ProjectSettings` interface (e.g., `{ enable_agent_workdir?: boolean; agent_workdir?: string }`) — the plan specifies `Record<string, unknown>` to keep settings extensible, matching the workspace settings pattern.
 - Did NOT add settings support to `CreateProjectRequest` — the create-project flow doesn't need it (Task 11 only adds the toggle to the detail sidebar).
+
+## Task 14: Daemon tests for pre-checkout and Cwd propagation
+
+### Findings
+
+- The existing `TestPreCheckoutRepos` (8 subtests, Task 6) already covers the direct `preCheckoutRepos` behavior: CreateWorktree params, collision guards, error handling, disabled/local_directory cases, and ref resolution.
+- The existing `TestRunTaskSetsAgentCwd` (2 subtests, Task 8) already covers end-to-end Cwd propagation using a fake shell-script agent binary: `enabled` runs in `workdir/src`, `disabled` runs in `workdir`.
+- Those two tests together cover the required behaviors, but they do not exercise them in a single integrated `runTask` invocation. To verify the combined path explicitly, I added `TestRunTaskPreChecksOutReposAndSetsCwd` in `server/internal/daemon/daemon_test.go`.
+- The new test uses the same fake agent binary pattern as `TestRunTaskSetsAgentCwd` and a `mockRepoCache` (already defined for `TestPreCheckoutRepos`). It verifies:
+  - `repoCache.CreateWorktree` is called once for each `github_repo` in `task.Repos` with the expected `WorkspaceID`, `WorkDir`, `AgentName`, and `TaskID`.
+  - The spawned agent process records a Cwd ending with `workdir/src` (the resolved `AgentWorkdir`).
+- The test is skipped on Windows because the fixture is a POSIX shell script.
+
+### Verification
+
+- `go test ./internal/daemon/... -run 'TestRunTaskPreChecksOutReposAndSetsCwd|TestRunTaskSetsAgentCwd|TestPreCheckoutRepos' -count=1` passes.
+- `go test ./internal/daemon/... -count=1` passes for the `daemon` package.
+- `go vet ./internal/daemon/...` reports no issues.
+- `gofmt -l internal/daemon/daemon_test.go` reports no formatting issues.
+- A pre-existing `execenv` test failure was observed: `TestPrepareOpenclawConfigUsesCwdWhenWorkdirEnabled` fails because `openclaw` is not on `PATH`. This is unrelated to Task 14 and is documented in `issues.md`.
