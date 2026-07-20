@@ -3850,3 +3850,170 @@ func TestHandleTask_AcksCancelOnPostRunStatusCheck(t *testing.T) {
 		t.Fatalf("cancel-ack calls = %d, want 1", got)
 	}
 }
+
+// mockRepoCache records CreateWorktree calls and returns configurable errors.
+type mockRepoCache struct {
+	createWorktreeCalls []repocache.WorktreeParams
+	createWorktreeErr   error
+}
+
+func (m *mockRepoCache) Lookup(string, string) string            { return "" }
+func (m *mockRepoCache) Sync(string, []repocache.RepoInfo) error { return nil }
+func (m *mockRepoCache) WithRepoLock(string, func() error) error { return nil }
+func (m *mockRepoCache) CreateWorktree(p repocache.WorktreeParams) (*repocache.WorktreeResult, error) {
+	m.createWorktreeCalls = append(m.createWorktreeCalls, p)
+	if m.createWorktreeErr != nil {
+		return nil, m.createWorktreeErr
+	}
+	return &repocache.WorktreeResult{
+		Path:       filepath.Join(p.WorkDir, repocache.RepoNameFromURL(p.RepoURL)),
+		BranchName: "agent/test/branch",
+	}, nil
+}
+
+func TestPreCheckoutRepos(t *testing.T) {
+	t.Parallel()
+
+	setup := func(t *testing.T) (*Daemon, *mockRepoCache, Task, *execenv.Environment) {
+		t.Helper()
+		mock := &mockRepoCache{}
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		d := &Daemon{
+			repoCache:  mock,
+			logger:     logger,
+			workspaces: map[string]*workspaceState{"ws-1": {}},
+		}
+		task := Task{
+			ID:                 "task-precheckout",
+			WorkspaceID:        "ws-1",
+			EnableAgentWorkdir: true,
+			AgentWorkdir:       "mydir",
+			Repos: []RepoData{
+				{URL: "https://github.com/org/repo-a.git"},
+				{URL: "https://github.com/org/repo-b.git"},
+			},
+		}
+		env := &execenv.Environment{WorkDir: "/tmp/workdir"}
+		return d, mock, task, env
+	}
+
+	t.Run("creates worktrees for all repos", func(t *testing.T) {
+		d, mock, task, env := setup(t)
+		err := d.preCheckoutRepos(task, env, "claude", "test-agent", d.logger)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(mock.createWorktreeCalls) != 2 {
+			t.Fatalf("CreateWorktree calls = %d, want 2", len(mock.createWorktreeCalls))
+		}
+		// Verify params on first call.
+		c := mock.createWorktreeCalls[0]
+		if c.WorkspaceID != "ws-1" {
+			t.Errorf("WorkspaceID = %q, want ws-1", c.WorkspaceID)
+		}
+		if c.WorkDir != "/tmp/workdir" {
+			t.Errorf("WorkDir = %q, want /tmp/workdir", c.WorkDir)
+		}
+		if c.AgentName != "test-agent" {
+			t.Errorf("AgentName = %q, want test-agent", c.AgentName)
+		}
+		if c.TaskID != "task-precheckout" {
+			t.Errorf("TaskID = %q, want task-precheckout", c.TaskID)
+		}
+		if c.Ref != "" {
+			t.Errorf("Ref = %q, want empty (no Ref in RepoData)", c.Ref)
+		}
+		if c.CoAuthoredByEnabled != true {
+			t.Errorf("CoAuthoredByEnabled = %v, want true (default)", c.CoAuthoredByEnabled)
+		}
+	})
+
+	t.Run("skips repo when name matches AgentWorkdir", func(t *testing.T) {
+		d, mock, task, env := setup(t)
+		task.Repos = append(task.Repos, RepoData{URL: "https://github.com/org/mydir.git"})
+		err := d.preCheckoutRepos(task, env, "claude", "test-agent", d.logger)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// repo-a and repo-b checked out, mydir skipped.
+		if len(mock.createWorktreeCalls) != 2 {
+			t.Fatalf("CreateWorktree calls = %d, want 2 (mydir skipped)", len(mock.createWorktreeCalls))
+		}
+	})
+
+	t.Run("skips duplicate repo names", func(t *testing.T) {
+		d, mock, task, env := setup(t)
+		// Same repo name as repo-a but different URL.
+		task.Repos = append(task.Repos, RepoData{URL: "https://github.com/other-org/repo-a.git"})
+		err := d.preCheckoutRepos(task, env, "claude", "test-agent", d.logger)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(mock.createWorktreeCalls) != 2 {
+			t.Fatalf("CreateWorktree calls = %d, want 2 (duplicate repo-a skipped)", len(mock.createWorktreeCalls))
+		}
+	})
+
+	t.Run("CreateWorktree error is fatal", func(t *testing.T) {
+		d, mock, task, env := setup(t)
+		mock.createWorktreeErr = errors.New("checkout failed")
+		err := d.preCheckoutRepos(task, env, "claude", "test-agent", d.logger)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "pre-checkout repo") {
+			t.Errorf("error = %q, want 'pre-checkout repo ...'", err.Error())
+		}
+		if !strings.Contains(err.Error(), "checkout failed") {
+			t.Errorf("error = %q, want wrapped 'checkout failed'", err.Error())
+		}
+	})
+
+	t.Run("disabled when EnableAgentWorkdir is false", func(t *testing.T) {
+		d, mock, task, env := setup(t)
+		task.EnableAgentWorkdir = false
+		err := d.preCheckoutRepos(task, env, "claude", "test-agent", d.logger)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(mock.createWorktreeCalls) != 0 {
+			t.Fatalf("CreateWorktree calls = %d, want 0", len(mock.createWorktreeCalls))
+		}
+	})
+
+	t.Run("disabled for local_directory tasks", func(t *testing.T) {
+		d, mock, task, env := setup(t)
+		env.LocalDirectory = true
+		err := d.preCheckoutRepos(task, env, "claude", "test-agent", d.logger)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(mock.createWorktreeCalls) != 0 {
+			t.Fatalf("CreateWorktree calls = %d, want 0", len(mock.createWorktreeCalls))
+		}
+	})
+
+	t.Run("uses repo Ref when set", func(t *testing.T) {
+		d, mock, task, env := setup(t)
+		task.Repos = []RepoData{{URL: "https://github.com/org/repo-a.git", Ref: "feature/x"}}
+		err := d.preCheckoutRepos(task, env, "claude", "test-agent", d.logger)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(mock.createWorktreeCalls) != 1 {
+			t.Fatalf("CreateWorktree calls = %d, want 1", len(mock.createWorktreeCalls))
+		}
+		if mock.createWorktreeCalls[0].Ref != "feature/x" {
+			t.Errorf("Ref = %q, want feature/x", mock.createWorktreeCalls[0].Ref)
+		}
+	})
+
+	t.Run("no-ops when repoCache is nil", func(t *testing.T) {
+		d, _, task, env := setup(t)
+		d.repoCache = nil
+		err := d.preCheckoutRepos(task, env, "claude", "test-agent", d.logger)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}

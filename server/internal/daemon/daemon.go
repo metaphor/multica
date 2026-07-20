@@ -74,6 +74,61 @@ func repoCheckoutModeFor(provider, goos string) string {
 	return ""
 }
 
+// preCheckoutRepos places github_repo project resources under WorkDir before
+// agent launch when EnableAgentWorkdir is set. Collision cases (repo name
+// matches AgentWorkdir, duplicate repo names) are warned and skipped.
+// CreateWorktree failures are fatal — the task must not start if a required
+// repo cannot be checked out in custom-workdir mode.
+func (d *Daemon) preCheckoutRepos(task Task, env *execenv.Environment, provider, agentName string, taskLog *slog.Logger) error {
+	if !task.EnableAgentWorkdir || env.LocalDirectory {
+		return nil
+	}
+	if d.repoCache == nil {
+		taskLog.Warn("pre-checkout: repo cache not available, skipping")
+		return nil
+	}
+
+	seen := make(map[string]bool)
+	coAuthoredByEnabled := d.workspaceCoAuthoredByEnabled(task.WorkspaceID)
+	checkoutMode := repoCheckoutModeFor(provider, runtime.GOOS)
+	for _, repo := range task.Repos {
+		if repo.URL == "" {
+			continue
+		}
+		repoName := repocache.RepoNameFromURL(repo.URL)
+		if repoName == task.AgentWorkdir {
+			taskLog.Warn("pre-checkout: repo name matches AgentWorkdir, skipping",
+				"repo", repo.URL, "name", repoName)
+			continue
+		}
+		if seen[repoName] {
+			taskLog.Warn("pre-checkout: duplicate repo name, skipping",
+				"repo", repo.URL, "name", repoName)
+			continue
+		}
+		seen[repoName] = true
+
+		checkoutRef := strings.TrimSpace(repo.Ref)
+		if checkoutRef == "" {
+			checkoutRef = d.taskRepoDefaultRef(task.WorkspaceID, task.ID, repo.URL)
+		}
+
+		if _, err := d.repoCache.CreateWorktree(repocache.WorktreeParams{
+			WorkspaceID:         task.WorkspaceID,
+			RepoURL:             repo.URL,
+			WorkDir:             env.WorkDir,
+			Ref:                 checkoutRef,
+			AgentName:           agentName,
+			TaskID:              task.ID,
+			CoAuthoredByEnabled: coAuthoredByEnabled,
+			IsolatedGitMetadata: checkoutMode == repoCheckoutModeIsolated,
+		}); err != nil {
+			return fmt.Errorf("pre-checkout repo %s: %w", repo.URL, err)
+		}
+	}
+	return nil
+}
+
 var (
 	taskPrepareLeaseRefresh = 15 * time.Second
 	taskPrepareLeaseTimeout = 10 * time.Second
@@ -4272,6 +4327,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		if err != nil {
 			return TaskResult{}, fmt.Errorf("prepare execution environment: %w", err)
 		}
+	}
+	// Pre-checkout github_repo resources when custom workdir is enabled.
+	if err := d.preCheckoutRepos(task, env, provider, agentName, taskLog); err != nil {
+		return TaskResult{}, err
 	}
 	// Belt-and-suspenders: also mark whatever root we ended up with, in case
 	// future changes diverge from PredictRootDir.
