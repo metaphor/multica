@@ -440,7 +440,7 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 	// this per-task data dir can load, so user-global MCP servers do not leak
 	// into managed-MCP runs.
 	if params.Provider == "cursor" {
-		cursorDataDir, err := prepareCursorMcpConfig(envRoot, workDir, params.McpConfig, params.CursorMcpAuthSource, manifest)
+		cursorDataDir, err := prepareCursorMcpConfig(envRoot, env.Cwd, params.McpConfig, params.CursorMcpAuthSource, manifest)
 		if err != nil {
 			return nil, fmt.Errorf("execenv: prepare cursor mcp config: %w", err)
 		}
@@ -452,13 +452,14 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 	}
 
 	// For OpenClaw, synthesize a per-task config that pins workspace to
-	// workDir. The skill scanner then reads {workDir}/skills/ (written by
+	// env.Cwd (which equals workDir when custom workdir is disabled). The
+	// skill scanner then reads {env.Cwd}/skills/ (written by
 	// writeContextFiles above). Fail closed on errors: a malformed user
 	// config that the openclaw CLI can't read is a real problem and
 	// silently degrading to a minimal config would mask it by booting
 	// OpenClaw without the agents / providers / API keys it expects.
 	if params.Provider == "openclaw" {
-		result, err := prepareOpenclawConfig(envRoot, workDir, OpenclawConfigPrep{
+		result, err := prepareOpenclawConfig(envRoot, env.Cwd, OpenclawConfigPrep{
 			OpenclawBin: params.OpenclawBin,
 			McpConfig:   params.McpConfig,
 			Gateway:     params.OpenclawGateway,

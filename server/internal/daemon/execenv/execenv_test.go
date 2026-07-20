@@ -5430,3 +5430,172 @@ func TestPreCheckoutChatWorkflowDisabled(t *testing.T) {
 		t.Errorf("CLAUDE.md missing legacy checkout instruction in chat workflow")
 	}
 }
+
+// TestPrepareOpenclawConfigUsesCwdWhenWorkdirEnabled verifies that the OpenClaw
+// per-task wrapper pins workspace to env.Cwd (not env.WorkDir) when custom
+// workdir is enabled.
+func TestPrepareOpenclawConfigUsesCwdWhenWorkdirEnabled(t *testing.T) {
+	t.Parallel()
+
+	// Install a stub that provides a valid active config path and agents list.
+	stub := installOpenclawStub(t, map[string]openclawResponse{
+		"config file":                   {stdout: filepath.Join(os.TempDir(), ".openclaw", "openclaw.json")},
+		"config get agents.list --json": {stdout: `[{"id":"default-agent","model":"claude-sonnet-4-6"}]`},
+	})
+	_ = stub
+
+	workspacesRoot := t.TempDir()
+	env, err := Prepare(PrepareParams{
+		WorkspacesRoot:     workspacesRoot,
+		WorkspaceID:        "ws-openclaw-cwd",
+		TaskID:             "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+		AgentName:          "OpenClaw Agent",
+		Provider:           "openclaw",
+		EnableAgentWorkdir: true,
+		AgentWorkdir:       "src",
+		Task:               TaskContextForEnv{IssueID: "openclaw-cwd-test"},
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+	defer env.Cleanup(true)
+
+	// Read the synthesized config.
+	cfg := mustReadJSON(t, env.OpenclawConfigPath)
+
+	// agents.defaults.workspace must be env.Cwd (workdir/src), not workdir.
+	agents, ok := cfg["agents"].(map[string]any)
+	if !ok {
+		t.Fatal("agents key missing or wrong type in openclaw config")
+	}
+	defaults, ok := agents["defaults"].(map[string]any)
+	if !ok {
+		t.Fatal("agents.defaults missing or wrong type")
+	}
+	gotWorkspace, ok := defaults["workspace"].(string)
+	if !ok {
+		t.Fatal("workspace field missing or not a string")
+	}
+	if gotWorkspace != env.Cwd {
+		t.Errorf("agents.defaults.workspace = %q, want env.Cwd = %q", gotWorkspace, env.Cwd)
+	}
+	if gotWorkspace == env.WorkDir {
+		t.Errorf("agents.defaults.workspace = %q, should NOT equal WorkDir = %q", gotWorkspace, env.WorkDir)
+	}
+	// Cwd should be WorkDir + "/src".
+	if !strings.HasSuffix(env.Cwd, string(filepath.Separator)+"src") {
+		t.Errorf("env.Cwd = %q, expected to end with /src", env.Cwd)
+	}
+}
+
+// TestPrepareOpenclawConfigUsesWorkDirWhenDisabled verifies that the OpenClaw
+// per-task wrapper pins workspace to WorkDir (which equals Cwd) when custom
+// workdir is disabled.
+func TestPrepareOpenclawConfigUsesWorkDirWhenDisabled(t *testing.T) {
+	t.Parallel()
+
+	stub := installOpenclawStub(t, map[string]openclawResponse{
+		"config file":                   {stdout: filepath.Join(os.TempDir(), ".openclaw", "openclaw.json")},
+		"config get agents.list --json": {stdout: `[{"id":"default-agent","model":"claude-sonnet-4-6"}]`},
+	})
+	_ = stub
+
+	workspacesRoot := t.TempDir()
+	env, err := Prepare(PrepareParams{
+		WorkspacesRoot:     workspacesRoot,
+		WorkspaceID:        "ws-openclaw-disabled",
+		TaskID:             "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+		AgentName:          "OpenClaw Agent",
+		Provider:           "openclaw",
+		EnableAgentWorkdir: false,
+		Task:               TaskContextForEnv{IssueID: "openclaw-disabled-test"},
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+	defer env.Cleanup(true)
+
+	cfg := mustReadJSON(t, env.OpenclawConfigPath)
+	agents, ok := cfg["agents"].(map[string]any)
+	if !ok {
+		t.Fatal("agents key missing")
+	}
+	defaults, ok := agents["defaults"].(map[string]any)
+	if !ok {
+		t.Fatal("agents.defaults missing")
+	}
+	gotWorkspace, ok := defaults["workspace"].(string)
+	if !ok {
+		t.Fatal("workspace field missing")
+	}
+	if gotWorkspace != env.WorkDir {
+		t.Errorf("agents.defaults.workspace = %q, want WorkDir = %q", gotWorkspace, env.WorkDir)
+	}
+}
+
+// TestPrepareCursorMcpConfigUsesCwdWhenWorkdirEnabled verifies that the Cursor
+// .cursor/mcp.json is written under env.Cwd (not env.WorkDir) when custom
+// workdir is enabled.
+func TestPrepareCursorMcpConfigUsesCwdWhenWorkdirEnabled(t *testing.T) {
+	t.Parallel()
+
+	workspacesRoot := t.TempDir()
+	env, err := Prepare(PrepareParams{
+		WorkspacesRoot:     workspacesRoot,
+		WorkspaceID:        "ws-cursor-cwd",
+		TaskID:             "c3d4e5f6-a7b8-9012-cdef-234567890123",
+		AgentName:          "Cursor Agent",
+		Provider:           "cursor",
+		EnableAgentWorkdir: true,
+		AgentWorkdir:       "src",
+		McpConfig:          json.RawMessage(`{"mcpServers":{"fetch":{"command":"uvx","args":["mcp-server-fetch"]}}}`),
+		Task:               TaskContextForEnv{IssueID: "cursor-cwd-test"},
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+	defer env.Cleanup(true)
+
+	// .cursor/mcp.json should exist under env.Cwd, not env.WorkDir.
+	cwdMcpPath := filepath.Join(env.Cwd, ".cursor", "mcp.json")
+	if _, err := os.Stat(cwdMcpPath); err != nil {
+		t.Fatalf(".cursor/mcp.json not found under Cwd %q: %v", env.Cwd, err)
+	}
+
+	// Should NOT exist under WorkDir if Cwd differs from WorkDir.
+	if env.Cwd != env.WorkDir {
+		workdirMcpPath := filepath.Join(env.WorkDir, ".cursor", "mcp.json")
+		if _, err := os.Stat(workdirMcpPath); !os.IsNotExist(err) {
+			t.Errorf(".cursor/mcp.json unexpectedly exists under WorkDir %q when Cwd differs", env.WorkDir)
+		}
+	}
+}
+
+// TestPrepareCursorMcpConfigUsesWorkDirWhenDisabled verifies that the Cursor
+// .cursor/mcp.json is written under WorkDir (which equals Cwd) when custom
+// workdir is disabled.
+func TestPrepareCursorMcpConfigUsesWorkDirWhenDisabled(t *testing.T) {
+	t.Parallel()
+
+	workspacesRoot := t.TempDir()
+	env, err := Prepare(PrepareParams{
+		WorkspacesRoot:     workspacesRoot,
+		WorkspaceID:        "ws-cursor-disabled",
+		TaskID:             "d4e5f6a7-b8c9-0123-defa-345678901234",
+		AgentName:          "Cursor Agent",
+		Provider:           "cursor",
+		EnableAgentWorkdir: false,
+		McpConfig:          json.RawMessage(`{"mcpServers":{"fetch":{"command":"uvx","args":["mcp-server-fetch"]}}}`),
+		Task:               TaskContextForEnv{IssueID: "cursor-disabled-test"},
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+	defer env.Cleanup(true)
+
+	// .cursor/mcp.json should exist under env.WorkDir.
+	workdirMcpPath := filepath.Join(env.WorkDir, ".cursor", "mcp.json")
+	if _, err := os.Stat(workdirMcpPath); err != nil {
+		t.Fatalf(".cursor/mcp.json not found under WorkDir %q: %v", env.WorkDir, err)
+	}
+}
