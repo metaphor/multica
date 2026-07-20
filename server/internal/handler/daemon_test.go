@@ -2528,6 +2528,87 @@ func TestClaimTask_ProjectDescriptionInjected(t *testing.T) {
 	}
 }
 
+// When a project has enable_agent_workdir=true and agent_workdir="mydir" in its
+// settings JSONB and no local_directory resources, the claim response must
+// surface both fields so the daemon can set up the custom workdir.
+func TestClaimTask_ProjectAgentWorkdir(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	ctx := context.Background()
+
+	settings := `{"enable_agent_workdir": true, "agent_workdir": "mydir"}`
+	var projectID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO project (workspace_id, title, settings) VALUES ($1, $2, $3::jsonb) RETURNING id
+	`, testWorkspaceID, "Agent workdir project", settings).Scan(&projectID); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM project WHERE id = $1`, projectID) })
+
+	var agentID, runtimeID string
+	if err := testPool.QueryRow(ctx,
+		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
+		testWorkspaceID,
+	).Scan(&agentID, &runtimeID); err != nil {
+		t.Fatalf("get agent: %v", err)
+	}
+
+	var issueID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO issue (
+			workspace_id, project_id, title, status, priority, creator_id, creator_type, number, position
+		) VALUES ($1, $2, 'agent workdir', 'todo', 'medium', $3, 'member', 88100, 0)
+		RETURNING id
+	`, testWorkspaceID, projectID, testUserID).Scan(&issueID); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID) })
+
+	var taskID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (
+			agent_id, runtime_id, issue_id, status, priority
+		) VALUES ($1, $2, $3, 'queued', 0)
+		RETURNING id
+	`, agentID, runtimeID, issueID).Scan(&taskID); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
+
+	w := httptest.NewRecorder()
+	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/claim", nil, testWorkspaceID, "test-claim-project-workdir")
+	req = withURLParam(req, "runtimeId", runtimeID)
+	testHandler.ClaimTaskByRuntime(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("ClaimTaskByRuntime: %d %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Task *struct {
+			ProjectID          string `json:"project_id"`
+			EnableAgentWorkdir bool   `json:"enable_agent_workdir"`
+			AgentWorkdir       string `json:"agent_workdir"`
+		} `json:"task"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Task == nil {
+		t.Fatal("expected task in response")
+	}
+	if resp.Task.ProjectID != projectID {
+		t.Errorf("project_id = %q, want %q", resp.Task.ProjectID, projectID)
+	}
+	if !resp.Task.EnableAgentWorkdir {
+		t.Error("enable_agent_workdir should be true")
+	}
+	if resp.Task.AgentWorkdir != "mydir" {
+		t.Errorf("agent_workdir = %q, want %q", resp.Task.AgentWorkdir, "mydir")
+	}
+}
+
 // The quick-create path resolves its project from the task context JSONB
 // (not an issue row), so its project_description wiring is a separate branch
 // in the claim handler and needs its own boundary assertion.

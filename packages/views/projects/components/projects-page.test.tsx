@@ -199,6 +199,7 @@ const PROJECT: Project = {
   issue_count: 3,
   done_count: 1,
   resource_count: 0,
+  settings: {},
 };
 
 function makeAdapter(

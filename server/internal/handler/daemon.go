@@ -1766,11 +1766,14 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			}
 
 			var projectRepos []RepoData
+			var hasProjectLocalDirectory bool
+			var projSettings []byte
 			if issue.ProjectID.Valid {
 				resp.ProjectID = uuidToString(issue.ProjectID)
 				if proj, err := h.Queries.GetProject(r.Context(), issue.ProjectID); err == nil {
 					resp.ProjectTitle = proj.Title
 					resp.ProjectDescription = proj.Description.String
+					projSettings = proj.Settings
 				}
 				if rows := h.listProjectResourcesForProject(r.Context(), issue.ProjectID); len(rows) > 0 {
 					out := make([]ProjectResourceData, 0, len(rows))
@@ -1789,6 +1792,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 							ResourceRef:  ref,
 							Label:        label,
 						})
+						if row.ResourceType == "local_directory" {
+							hasProjectLocalDirectory = true
+						}
 						// Lift github_repo resources into the daemon's repo list
 						// so `multica repo checkout` and the meta-skill render
 						// them as the issue's repos.
@@ -1803,6 +1809,16 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 						}
 					}
 					resp.ProjectResources = out
+				}
+				if !hasProjectLocalDirectory && len(projSettings) > 0 {
+					var s struct {
+						EnableAgentWorkdir bool   `json:"enable_agent_workdir"`
+						AgentWorkdir       string `json:"agent_workdir"`
+					}
+					if json.Unmarshal(projSettings, &s) == nil {
+						resp.EnableAgentWorkdir = s.EnableAgentWorkdir
+						resp.AgentWorkdir = s.AgentWorkdir
+					}
 				}
 			}
 
@@ -2246,6 +2262,8 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			// the project, and `multica repo checkout` sees the project's
 			// github_repo resources instead of the workspace fallback.
 			var projectRepos []RepoData
+			var hasProjectLocalDirectory bool
+			var projSettings []byte
 			if qc.ProjectID != "" {
 				projectUUID, err := util.ParseUUID(qc.ProjectID)
 				if err == nil {
@@ -2253,6 +2271,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 					if proj, err := h.Queries.GetProject(r.Context(), projectUUID); err == nil {
 						resp.ProjectTitle = proj.Title
 						resp.ProjectDescription = proj.Description.String
+						projSettings = proj.Settings
 					}
 					if rows := h.listProjectResourcesForProject(r.Context(), projectUUID); len(rows) > 0 {
 						out := make([]ProjectResourceData, 0, len(rows))
@@ -2271,6 +2290,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 								ResourceRef:  ref,
 								Label:        label,
 							})
+							if row.ResourceType == "local_directory" {
+								hasProjectLocalDirectory = true
+							}
 							if row.ResourceType == "github_repo" {
 								var payload struct {
 									URL string `json:"url"`
@@ -2282,6 +2304,16 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 							}
 						}
 						resp.ProjectResources = out
+					}
+					if !hasProjectLocalDirectory && len(projSettings) > 0 {
+						var s struct {
+							EnableAgentWorkdir bool   `json:"enable_agent_workdir"`
+							AgentWorkdir       string `json:"agent_workdir"`
+						}
+						if json.Unmarshal(projSettings, &s) == nil {
+							resp.EnableAgentWorkdir = s.EnableAgentWorkdir
+							resp.AgentWorkdir = s.AgentWorkdir
+						}
 					}
 				}
 			}

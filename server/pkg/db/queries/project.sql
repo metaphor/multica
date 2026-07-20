@@ -32,6 +32,7 @@ UPDATE project SET
     lead_id = sqlc.narg('lead_id'),
     start_date = sqlc.narg('start_date'),
     due_date = sqlc.narg('due_date'),
+    settings = COALESCE(sqlc.narg('settings'), settings),
     updated_at = now()
 WHERE id = $1
 RETURNING *;

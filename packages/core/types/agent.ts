@@ -339,6 +339,10 @@ export interface AgentTask {
    * shares and screenshots also stay safe).
    */
   relative_work_dir?: string;
+  /** True when the project has enable_agent_workdir set and no local_directory resources. */
+  enable_agent_workdir?: boolean;
+  /** Custom workdir path from project settings; meaningful only when enable_agent_workdir is true. */
+  agent_workdir?: string;
   /**
    * Resolved accountable-human provenance of this run (MUL-4302 §9): who it ran
    * "on behalf of", how that was resolved, and the evidence/lineage. Present on

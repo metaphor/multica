@@ -42,9 +42,17 @@ type ProjectResponse struct {
 	// payload to keep parent metadata and child collections separate; clients
 	// that need the list call ListProjectResources directly.
 	ResourceCount int64 `json:"resource_count"`
+	Settings      any   `json:"settings"`
 }
 
 func projectToResponse(p db.Project) ProjectResponse {
+	var settings any
+	if p.Settings != nil {
+		json.Unmarshal(p.Settings, &settings)
+	}
+	if settings == nil {
+		settings = map[string]any{}
+	}
 	return ProjectResponse{
 		ID:          uuidToString(p.ID),
 		WorkspaceID: uuidToString(p.WorkspaceID),
@@ -59,6 +67,7 @@ func projectToResponse(p db.Project) ProjectResponse {
 		DueDate:     dateToPtr(p.DueDate),
 		CreatedAt:   timestampToString(p.CreatedAt),
 		UpdatedAt:   timestampToString(p.UpdatedAt),
+		Settings:    settings,
 	}
 }
 
@@ -111,6 +120,7 @@ type UpdateProjectRequest struct {
 	LeadID      *string `json:"lead_id"`
 	StartDate   *string `json:"start_date"`
 	DueDate     *string `json:"due_date"`
+	Settings    any     `json:"settings"`
 }
 
 func (h *Handler) ListProjects(w http.ResponseWriter, r *http.Request) {
@@ -213,6 +223,34 @@ func validateProjectEnum(w http.ResponseWriter, field, value string, allowed []s
 	}
 	writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid %s %q; valid values: %s", field, value, strings.Join(allowed, ", ")))
 	return false
+}
+
+// validateProjectSettings checks the project settings payload for well-known
+// keys. When enable_agent_workdir is true, agent_workdir must be a non-empty
+// relative path: no leading slash, no ".." traversal segments, and not ".".
+func validateProjectSettings(settings any) error {
+	m, ok := settings.(map[string]any)
+	if !ok {
+		return nil // unknown shape; let it through
+	}
+	enabled, _ := m["enable_agent_workdir"].(bool)
+	if !enabled {
+		return nil
+	}
+	dir, _ := m["agent_workdir"].(string)
+	if dir == "" {
+		return fmt.Errorf("agent_workdir is required when enable_agent_workdir is true")
+	}
+	if strings.HasPrefix(dir, "/") {
+		return fmt.Errorf("agent_workdir must be a relative path, got %q", dir)
+	}
+	if dir == "." {
+		return fmt.Errorf("agent_workdir must not be \".\", got %q", dir)
+	}
+	if strings.Contains(dir, "..") {
+		return fmt.Errorf("agent_workdir must not contain \"..\" traversal, got %q", dir)
+	}
+	return nil
 }
 
 // writeProjectWriteError maps a failed project INSERT/UPDATE to an HTTP
@@ -551,6 +589,18 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 			params.DueDate = pgtype.Date{Valid: false} // explicit null = clear date
 		}
 	}
+	if _, ok := rawFields["settings"]; ok {
+		if req.Settings != nil {
+			if err := validateProjectSettings(req.Settings); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			s, _ := json.Marshal(req.Settings)
+			params.Settings = s
+		} else {
+			params.Settings = nil
+		}
+	}
 	project, err := h.Queries.UpdateProject(r.Context(), params)
 	if err != nil {
 		h.writeProjectWriteError(w, r, err, "update")
@@ -714,7 +764,7 @@ func buildProjectSearchQuery(phrase string, terms []string, includeClosed bool) 
 	offsetParam := nextArg(nil)
 
 	query := fmt.Sprintf(`SELECT p.id, p.workspace_id, p.title, p.description, p.icon,
-		p.status, p.priority, p.lead_type, p.lead_id,
+		p.settings, p.status, p.priority, p.lead_type, p.lead_id,
 		p.start_date, p.due_date,
 		p.created_at, p.updated_at,
 		COUNT(*) OVER() AS total_count,
@@ -789,6 +839,7 @@ func (h *Handler) SearchProjects(w http.ResponseWriter, r *http.Request) {
 				&row.project.Title,
 				&row.project.Description,
 				&row.project.Icon,
+				&row.project.Settings,
 				&row.project.Status,
 				&row.project.Priority,
 				&row.project.LeadType,
