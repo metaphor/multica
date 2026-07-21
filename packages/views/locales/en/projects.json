@@ -72,7 +72,6 @@
     "agent_workdir_toggle": "Use custom agent working directory",
     "agent_workdir_placeholder": "e.g. src",
     "agent_workdir_error": "Must be a non-empty relative path without '..' or leading '/'.",
-    "agent_workdir_repo_warning": "Must not match a project repository name.",
     "prop_start_date": "Start date",
     "prop_due_date": "Due date",
     "clear_date": "Clear date",

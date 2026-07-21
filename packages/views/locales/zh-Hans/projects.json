@@ -71,7 +71,6 @@
     "agent_workdir_toggle": "使用自定义 Agent 工作目录",
     "agent_workdir_placeholder": "例如 src",
     "agent_workdir_error": "必须为非空的相对路径，不能包含 '..' 或以 '/' 开头。",
-    "agent_workdir_repo_warning": "不能与项目仓库名称相同。",
     "prop_start_date": "开始日期",
     "prop_due_date": "截止日期",
     "clear_date": "清除日期",

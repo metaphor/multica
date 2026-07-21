@@ -71,7 +71,6 @@
     "agent_workdir_toggle": "사용자 정의 에이전트 작업 디렉터리 사용",
     "agent_workdir_placeholder": "예: src",
     "agent_workdir_error": "비어 있지 않고 '..'나 선행 '/'가 없는 상대 경로여야 합니다.",
-    "agent_workdir_repo_warning": "프로젝트 저장소 이름과 일치할 수 없습니다.",
     "prop_start_date": "시작일",
     "prop_due_date": "마감일",
     "clear_date": "날짜 지우기",

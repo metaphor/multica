@@ -71,7 +71,6 @@
     "agent_workdir_toggle": "カスタムエージェント作業ディレクトリを使用",
     "agent_workdir_placeholder": "例: src",
     "agent_workdir_error": "'..' や先頭の '/' を含まない、空でない相対パスである必要があります。",
-    "agent_workdir_repo_warning": "プロジェクトのリポジトリ名と一致してはいけません。",
     "prop_start_date": "開始日",
     "prop_due_date": "期限",
     "clear_date": "日付をクリア",
