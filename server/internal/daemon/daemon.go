@@ -74,11 +74,6 @@ func repoCheckoutModeFor(provider, goos string) string {
 	return ""
 }
 
-// preCheckoutRepos places github_repo project resources under WorkDir before
-// agent launch when EnableAgentWorkdir is set. Collision cases (repo name
-// matches AgentWorkdir, duplicate repo names) are warned and skipped.
-// CreateWorktree failures are fatal — the task must not start if a required
-// repo cannot be checked out in custom-workdir mode.
 func (d *Daemon) preCheckoutRepos(task Task, env *execenv.Environment, provider, agentName string, taskLog *slog.Logger) error {
 	if !task.EnableAgentWorkdir || env.LocalDirectory {
 		return nil
@@ -96,11 +91,6 @@ func (d *Daemon) preCheckoutRepos(task Task, env *execenv.Environment, provider,
 			continue
 		}
 		repoName := repocache.RepoNameFromURL(repo.URL)
-		if repoName == task.AgentWorkdir {
-			taskLog.Warn("pre-checkout: repo name matches AgentWorkdir, skipping",
-				"repo", repo.URL, "name", repoName)
-			continue
-		}
 		if seen[repoName] {
 			taskLog.Warn("pre-checkout: duplicate repo name, skipping",
 				"repo", repo.URL, "name", repoName)
@@ -203,7 +193,7 @@ var (
 	isBrewInstall         = cli.IsBrewInstall
 	getBrewPrefix         = cli.GetBrewPrefix
 	matchKnownBrewPrefix  = cli.MatchKnownBrewPrefix
-	resolveSelfExecutable = selfexec.Resolve
+	resolveSelfExecutable = selfexec.ResolveStable
 
 	// detectAgentVersion / checkAgentMinVersion are indirections over the
 	// real agent helpers so tests can run the registration path without
@@ -4334,6 +4324,19 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if err := d.preCheckoutRepos(task, env, provider, agentName, taskLog); err != nil {
 		return TaskResult{}, err
 	}
+	// Prepare skips creating the agent_workdir so git worktree can create it
+	// when the project repo name matches agent_workdir. After pre-checkout, make
+	// the directory only if it still does not exist, so the runtime brief can be
+	// written and the agent process can start with a valid Cwd.
+	if task.EnableAgentWorkdir && env.Cwd != env.WorkDir {
+		if _, err := os.Stat(env.Cwd); os.IsNotExist(err) {
+			if err := os.MkdirAll(env.Cwd, 0o755); err != nil {
+				return TaskResult{}, fmt.Errorf("create agent_workdir: %w", err)
+			}
+		} else if err != nil {
+			return TaskResult{}, fmt.Errorf("stat agent_workdir: %w", err)
+		}
+	}
 	taskCtx.WorkDir = env.WorkDir
 	// Belt-and-suspenders: also mark whatever root we ended up with, in case
 	// future changes diverge from PredictRootDir.
@@ -4381,12 +4384,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		gateCodexResumeToRolloutPresence(&task, &taskCtx, provider, env.CodexHome, taskLog)
 	}
 
-	// Inject runtime-specific config (meta skill) so the agent discovers .agent_context/.
-	// Write to env.Cwd so the runtime brief lands in the agent's effective
-	// working directory when EnableAgentWorkdir is set. env.Cwd falls back
-	// to env.WorkDir when the feature is off, so behavior is unchanged for
-	// non-custom-workdir tasks.
-	runtimeBrief, err := execenv.InjectRuntimeConfig(env.Cwd, provider, taskCtx)
+	runtimeBrief, err := execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
 	if err != nil {
 		d.logger.Warn("execenv: inject runtime config failed (non-fatal)", "error", err)
 	}
@@ -4628,8 +4626,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if provider == "opencode" {
 		idleWatchdogTimeout = d.cfg.OpenCodeIdleWatchdog
 	}
+	execCwd := env.Cwd
+	if !task.EnableAgentWorkdir {
+		execCwd = env.WorkDir
+	}
 	execOpts := agent.ExecOptions{
-		Cwd:                       env.Cwd,
+		Cwd:                       execCwd,
 		Model:                     model,
 		ThreadName:                deriveTaskThreadName(task),
 		Timeout:                   d.cfg.AgentTimeout,

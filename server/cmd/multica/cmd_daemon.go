@@ -239,7 +239,7 @@ func healthPortForProfile(profile string) int {
 // daemonExecutable resolves the binary to spawn as the background daemon
 // child. Tests override it: spawning the resolved executable there would fork
 // the test binary itself, which ignores the daemon args and re-runs the suite.
-var daemonExecutable = selfexec.Resolve
+var daemonExecutable = selfexec.ResolveStable
 
 // requireDaemonAuth fails fast when the user never ran `multica login`. The
 // daemon child performs the same check (resolveAuth) and dies immediately,

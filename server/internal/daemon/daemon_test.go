@@ -3928,16 +3928,15 @@ func TestPreCheckoutRepos(t *testing.T) {
 		}
 	})
 
-	t.Run("skips repo when name matches AgentWorkdir", func(t *testing.T) {
+	t.Run("checks out repo when name matches AgentWorkdir", func(t *testing.T) {
 		d, mock, task, env := setup(t)
 		task.Repos = append(task.Repos, RepoData{URL: "https://github.com/org/mydir.git"})
 		err := d.preCheckoutRepos(task, env, "claude", "test-agent", d.logger)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		// repo-a and repo-b checked out, mydir skipped.
-		if len(mock.createWorktreeCalls) != 2 {
-			t.Fatalf("CreateWorktree calls = %d, want 2 (mydir skipped)", len(mock.createWorktreeCalls))
+		if len(mock.createWorktreeCalls) != 3 {
+			t.Fatalf("CreateWorktree calls = %d, want 3 (mydir checked out)", len(mock.createWorktreeCalls))
 		}
 	})
 
@@ -4019,9 +4018,6 @@ func TestPreCheckoutRepos(t *testing.T) {
 }
 
 // TestRunTaskPreChecksOutReposAndSetsCwd verifies the combined custom-workdir
-// launch path: when EnableAgentWorkdir is true, the daemon calls
-// repoCache.CreateWorktree for each github_repo before launching the agent, and
-// the spawned agent process runs with Cwd set to the resolved agent workdir.
 func TestRunTaskPreChecksOutReposAndSetsCwd(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {
@@ -4120,15 +4116,12 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
 		t.Fatalf("read cwd file: %v", err)
 	}
 	recordedCwd := strings.TrimSpace(string(cwdData))
-	expectedSuffix := filepath.Join("workdir", "src")
-	if !strings.HasSuffix(recordedCwd, expectedSuffix) {
-		t.Errorf("agent process Cwd = %q, want to end with %q", recordedCwd, expectedSuffix)
+	wantCwd := "workdir/src"
+	if !strings.HasSuffix(recordedCwd, wantCwd) {
+		t.Errorf("agent process Cwd = %q, want to end with %q", recordedCwd, wantCwd)
 	}
 }
 
-// TestRunTaskSetsAgentCwd verifies that when EnableAgentWorkdir is set the
-// agent process runs with Cwd set to env.Cwd (the resolved subdirectory), and
-// when disabled the agent runs in WorkDir as before.
 func TestRunTaskSetsAgentCwd(t *testing.T) {
 	t.Parallel()
 
@@ -4190,7 +4183,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
 		}
 	}
 
-	t.Run("enabled sets Cwd to subdirectory", func(t *testing.T) {
+	t.Run("enabled sets Cwd to agent_workdir", func(t *testing.T) {
 		d, _, cwdFile, cleanup := newCwdTestDaemon(t)
 		defer cleanup()
 
@@ -4208,9 +4201,8 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
 			t.Fatalf("read cwd file: %v", err)
 		}
 		recordedCwd := strings.TrimSpace(string(cwdData))
-		expectedSuffix := filepath.Join("workdir", "src")
-		if !strings.HasSuffix(recordedCwd, expectedSuffix) {
-			t.Errorf("agent process Cwd = %q, want to end with %q", recordedCwd, expectedSuffix)
+		if !strings.HasSuffix(recordedCwd, "workdir/src") {
+			t.Errorf("agent process Cwd = %q, want to end with %q", recordedCwd, "workdir/src")
 		}
 	})
 
