@@ -7,11 +7,10 @@ import { useQuery } from "@tanstack/react-query";
 import { cn } from "@multica/ui/lib/utils";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { toast } from "sonner";
-import type { ProjectStatus, ProjectPriority, GithubRepoResourceRef } from "@multica/core/types";
+import type { ProjectStatus, ProjectPriority } from "@multica/core/types";
 import { useAuthStore } from "@multica/core/auth";
 import { projectDetailOptions } from "@multica/core/projects/queries";
 import { useUpdateProject, useDeleteProject } from "@multica/core/projects/mutations";
-import { projectResourcesOptions } from "@multica/core/projects";
 import { pinListOptions } from "@multica/core/pins";
 import { useCreatePin, useDeletePin } from "@multica/core/pins";
 import { memberListOptions, agentListOptions } from "@multica/core/workspace/queries";
@@ -96,16 +95,6 @@ function PropRow({
   );
 }
 
-function repoNameFromUrl(url: string): string | null {
-  const trimmed = url.trim();
-  if (!trimmed) return null;
-  const withoutGit = trimmed.replace(/\.git$/i, "");
-  const withoutTrailingSlash = withoutGit.replace(/\/$/, "");
-  const lastSep = Math.max(withoutTrailingSlash.lastIndexOf("/"), withoutTrailingSlash.lastIndexOf("\\"));
-  if (lastSep === -1) return withoutTrailingSlash;
-  return withoutTrailingSlash.slice(lastSep + 1);
-}
-
 // ---------------------------------------------------------------------------
 // ProjectDetail
 // ---------------------------------------------------------------------------
@@ -164,8 +153,6 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
   const [runtimeOpen, setRuntimeOpen] = useState(true);
   const [agentWorkdirDraft, setAgentWorkdirDraft] = useState("");
   const [agentWorkdirError, setAgentWorkdirError] = useState<string | null>(null);
-
-  const { data: resources = [] } = useQuery(projectResourcesOptions(wsId, projectId));
 
   // Sidebar panel
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
@@ -237,44 +224,20 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
     });
   }, [project, deleteProject, router, wsPaths, t]);
 
-  if (isLoading) {
-    return (
-      <div className="mx-auto w-full max-w-4xl px-8 py-10 space-y-4">
-        <Skeleton className="h-5 w-32" />
-        <Skeleton className="h-8 w-64" />
-        <Skeleton className="h-4 w-96" />
-        <Skeleton className="h-40 w-full mt-8" />
-      </div>
-    );
-  }
+  const enableAgentWorkdir = Boolean(project?.settings?.enable_agent_workdir);
+  const agentWorkdir = typeof project?.settings?.agent_workdir === "string" ? project.settings.agent_workdir : "";
 
-  if (!project) {
-    return <div className="flex items-center justify-center h-full text-muted-foreground">{t(($) => $.detail.not_found)}</div>;
-  }
-
-  const issueMetrics = getProjectIssueMetrics(project);
-  const statusCfg = PROJECT_STATUS_CONFIG[project.status];
-
-  const enableAgentWorkdir = Boolean(project.settings?.enable_agent_workdir);
-  const agentWorkdir = typeof project.settings?.agent_workdir === "string" ? project.settings.agent_workdir : "";
+  const [enableAgentWorkdirOpen, setEnableAgentWorkdirOpen] = useState(enableAgentWorkdir);
 
   useEffect(() => {
+    setEnableAgentWorkdirOpen(enableAgentWorkdir);
+  }, [enableAgentWorkdir]);
+
+  useEffect(() => {
+    if (!project) return;
     setAgentWorkdirDraft(agentWorkdir);
     setAgentWorkdirError(null);
-  }, [agentWorkdir, project.id]);
-
-  const repoNames = useMemo(() => {
-    const names = new Set<string>();
-    for (const r of resources) {
-      if (r.resource_type === "github_repo") {
-        const name = repoNameFromUrl((r.resource_ref as GithubRepoResourceRef).url);
-        if (name) names.add(name.toLowerCase());
-      }
-    }
-    return names;
-  }, [resources]);
-
-  const repoWarning = enableAgentWorkdir && repoNames.has(agentWorkdirDraft.trim().toLowerCase());
+  }, [agentWorkdir, project?.id]);
 
   const validateAgentWorkdir = useCallback((value: string): string | null => {
     const trimmed = value.trim();
@@ -292,25 +255,62 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
       return;
     }
     setAgentWorkdirError(null);
+    if (!enableAgentWorkdirOpen) return;
     handleUpdateField({
       settings: {
-        ...project.settings,
-        enable_agent_workdir: enableAgentWorkdir,
+        ...project?.settings,
+        enable_agent_workdir: true,
         agent_workdir: trimmed,
       },
     });
-  }, [agentWorkdirDraft, enableAgentWorkdir, project.settings, handleUpdateField, validateAgentWorkdir]);
+  }, [agentWorkdirDraft, enableAgentWorkdirOpen, project?.settings, handleUpdateField, validateAgentWorkdir]);
 
   const handleToggleAgentWorkdir = useCallback((checked: boolean) => {
-    handleUpdateField({
-      settings: {
-        ...project.settings,
-        enable_agent_workdir: checked,
-        agent_workdir: agentWorkdirDraft.trim(),
-      },
-    });
-    setAgentWorkdirError(null);
-  }, [agentWorkdirDraft, project.settings, handleUpdateField]);
+    setEnableAgentWorkdirOpen(checked);
+    if (checked) {
+      const trimmed = agentWorkdirDraft.trim();
+      const error = validateAgentWorkdir(trimmed);
+      if (error) {
+        setAgentWorkdirError(error);
+        return;
+      }
+      setAgentWorkdirError(null);
+      handleUpdateField({
+        settings: {
+          ...project?.settings,
+          enable_agent_workdir: true,
+          agent_workdir: trimmed,
+        },
+      });
+    } else {
+      setAgentWorkdirError(null);
+      handleUpdateField({
+        settings: {
+          ...project?.settings,
+          enable_agent_workdir: false,
+          agent_workdir: agentWorkdirDraft.trim(),
+        },
+      });
+    }
+  }, [agentWorkdirDraft, project?.settings, handleUpdateField, validateAgentWorkdir]);
+
+  if (isLoading) {
+    return (
+      <div className="mx-auto w-full max-w-4xl px-8 py-10 space-y-4">
+        <Skeleton className="h-5 w-32" />
+        <Skeleton className="h-8 w-64" />
+        <Skeleton className="h-4 w-96" />
+        <Skeleton className="h-40 w-full mt-8" />
+      </div>
+    );
+  }
+
+  if (!project) {
+    return <div className="flex items-center justify-center h-full text-muted-foreground">{t(($) => $.detail.not_found)}</div>;
+  }
+
+  const issueMetrics = getProjectIssueMetrics(project);
+  const statusCfg = PROJECT_STATUS_CONFIG[project.status];
 
   const sidebarContent = (
     <div className="space-y-5">
@@ -500,13 +500,13 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
             <label className="flex cursor-pointer items-center justify-between gap-2 rounded-md px-2 -mx-2 py-1.5 hover:bg-accent/50 transition-colors">
               <span className="text-xs">{t(($) => $.detail.agent_workdir_toggle)}</span>
               <Switch
-                checked={enableAgentWorkdir}
+                checked={enableAgentWorkdirOpen}
                 onCheckedChange={handleToggleAgentWorkdir}
                 size="sm"
                 aria-label={t(($) => $.detail.agent_workdir_toggle)}
               />
             </label>
-            {enableAgentWorkdir && (
+            {enableAgentWorkdirOpen && (
               <div className="space-y-1">
                 <Input
                   value={agentWorkdirDraft}
@@ -521,9 +521,6 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
                 />
                 {agentWorkdirError && (
                   <p className="text-xs text-destructive">{agentWorkdirError}</p>
-                )}
-                {repoWarning && !agentWorkdirError && (
-                  <p className="text-xs text-warning">{t(($) => $.detail.agent_workdir_repo_warning)}</p>
                 )}
               </div>
             )}

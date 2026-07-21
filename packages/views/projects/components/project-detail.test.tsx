@@ -244,11 +244,22 @@ describe("ProjectDetail runtime section", () => {
     await waitFor(() => {
       expect(container.querySelector('[data-slot="input"]')).toBeInTheDocument();
     });
-    expect(updateProjectSpy).toHaveBeenCalledOnce();
+    expect(updateProjectSpy).not.toHaveBeenCalled();
+  });
+
+  it("commits the existing workdir when toggling on", async () => {
+    const { container } = renderProjectDetail({ agent_workdir: "src" });
+    await screen.findByText("Runtime");
+    const switchEl = container.querySelector('[data-slot="switch"]');
+    expect(switchEl).not.toBeNull();
+    fireEvent.click(switchEl!);
+    await waitFor(() => {
+      expect(updateProjectSpy).toHaveBeenCalledOnce();
+    });
     expect(updateProjectSpy).toHaveBeenLastCalledWith(
       "p-1",
       expect.objectContaining({
-        settings: expect.objectContaining({ enable_agent_workdir: true, agent_workdir: "" }),
+        settings: expect.objectContaining({ enable_agent_workdir: true, agent_workdir: "src" }),
       }),
     );
   });
@@ -311,7 +322,7 @@ describe("ProjectDetail runtime section", () => {
     expect(updateProjectSpy).not.toHaveBeenCalled();
   });
 
-  it("shows a warning when the workdir matches a repo name", async () => {
+  it("allows the workdir to match a repo name", async () => {
     projectResourcesFixture.resources = [
       { resource_type: "github_repo", resource_ref: { url: "https://github.com/owner/myrepo.git" } },
     ] as ProjectResource[];
@@ -321,9 +332,10 @@ describe("ProjectDetail runtime section", () => {
     });
     const input = container.querySelector('[data-slot="input"]') as HTMLInputElement;
     fireEvent.change(input, { target: { value: "myrepo" } });
+    fireEvent.blur(input);
     await waitFor(() => {
-      expect(screen.getByText(/Must not match a project repository name/i)).toBeInTheDocument();
+      expect(screen.queryByText(/Must not match a project repository name/i)).not.toBeInTheDocument();
     });
-    expect(updateProjectSpy).not.toHaveBeenCalled();
+    expect(updateProjectSpy).toHaveBeenCalled();
   });
 });
