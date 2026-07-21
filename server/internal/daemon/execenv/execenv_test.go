@@ -4923,8 +4923,8 @@ func TestPrepareAgentCwd(t *testing.T) {
 }
 
 // TestPrepareContextFilesWithAgentCwd verifies that writeContextFiles and
-// InjectRuntimeConfig write to env.Cwd when EnableAgentWorkdir is set, and to
-// env.WorkDir when disabled.
+// InjectRuntimeConfig write to env.WorkDir (the workdir root) when
+// EnableAgentWorkdir is set, and to env.Cwd (which equals WorkDir) when disabled.
 func TestPrepareContextFilesWithAgentCwd(t *testing.T) {
 	t.Parallel()
 
@@ -4939,7 +4939,7 @@ func TestPrepareContextFilesWithAgentCwd(t *testing.T) {
 		}
 	}
 
-	t.Run("writes context files to Cwd when custom workdir enabled", func(t *testing.T) {
+	t.Run("writes context files to WorkDir when custom workdir enabled", func(t *testing.T) {
 		t.Parallel()
 		p := baseParams("c1b2c3d4-e5f6-7890-abcd-ef1234567890")
 		p.EnableAgentWorkdir = true
@@ -4953,34 +4953,34 @@ func TestPrepareContextFilesWithAgentCwd(t *testing.T) {
 			t.Fatal("expected Cwd != WorkDir with custom workdir enabled")
 		}
 
-		// Context files should exist under Cwd.
-		ctxPath := filepath.Join(env.Cwd, ".agent_context", "issue_context.md")
+		// agent_workdir subdirectory must NOT be pre-created by the daemon.
+		if _, err := os.Stat(env.Cwd); !os.IsNotExist(err) {
+			t.Errorf("agent_workdir %s should NOT be pre-created by the daemon", env.Cwd)
+		}
+
+		// Context files should exist under WorkDir (the root).
+		ctxPath := filepath.Join(env.WorkDir, ".agent_context", "issue_context.md")
 		if _, err := os.Stat(ctxPath); os.IsNotExist(err) {
-			t.Errorf(".agent_context/issue_context.md missing under Cwd: %s", env.Cwd)
+			t.Errorf(".agent_context/issue_context.md missing under WorkDir: %s", env.WorkDir)
 		}
-		markerPath := filepath.Join(env.Cwd, ".multica", "daemon_task_context.json")
+		markerPath := filepath.Join(env.WorkDir, ".multica", "daemon_task_context.json")
 		if _, err := os.Stat(markerPath); os.IsNotExist(err) {
-			t.Errorf("daemon_task_context.json missing under Cwd: %s", env.Cwd)
+			t.Errorf("daemon_task_context.json missing under WorkDir: %s", env.WorkDir)
 		}
 
-		// Context files should NOT exist under WorkDir (the root workdir is
-		// distinct from Cwd when custom workdir is enabled).
-		rootCtxPath := filepath.Join(env.WorkDir, ".agent_context", "issue_context.md")
+		// Context files should NOT exist under Cwd (the agent_workdir is not created).
+		rootCtxPath := filepath.Join(env.Cwd, ".agent_context", "issue_context.md")
 		if _, err := os.Stat(rootCtxPath); !os.IsNotExist(err) {
-			t.Error(".agent_context/issue_context.md should not exist under WorkDir root")
-		}
-		rootMarkerPath := filepath.Join(env.WorkDir, ".multica", "daemon_task_context.json")
-		if _, err := os.Stat(rootMarkerPath); !os.IsNotExist(err) {
-			t.Error("daemon_task_context.json should not exist under WorkDir root")
+			t.Error(".agent_context/issue_context.md should not exist under Cwd (agent_workdir not created)")
 		}
 
-		// InjectRuntimeConfig should write to Cwd.
-		if _, err := InjectRuntimeConfig(env.Cwd, "claude", TaskContextForEnv{IssueID: "issue-1"}); err != nil {
-			t.Fatalf("InjectRuntimeConfig to Cwd: %v", err)
+		// InjectRuntimeConfig should write to WorkDir (matching runTask behavior).
+		if _, err := InjectRuntimeConfig(env.WorkDir, "claude", TaskContextForEnv{IssueID: "issue-1"}); err != nil {
+			t.Fatalf("InjectRuntimeConfig to WorkDir: %v", err)
 		}
-		claudeMdPath := filepath.Join(env.Cwd, "CLAUDE.md")
+		claudeMdPath := filepath.Join(env.WorkDir, "CLAUDE.md")
 		if _, err := os.Stat(claudeMdPath); os.IsNotExist(err) {
-			t.Error("CLAUDE.md missing under Cwd after InjectRuntimeConfig")
+			t.Error("CLAUDE.md missing under WorkDir after InjectRuntimeConfig")
 		}
 	})
 
@@ -5150,8 +5150,10 @@ func TestResolveAgentCwd(t *testing.T) {
 				if !strings.HasSuffix(env.Cwd, tt.wantCwd) {
 					t.Errorf("Cwd = %q, want suffix %q", env.Cwd, tt.wantCwd)
 				}
-				if _, err := os.Stat(env.Cwd); os.IsNotExist(err) {
-					t.Errorf("Cwd directory was not created: %s", env.Cwd)
+				// Cwd directory is NOT pre-created by the daemon when
+				// EnableAgentWorkdir is true — the agent creates it.
+				if _, err := os.Stat(env.Cwd); !os.IsNotExist(err) {
+					t.Errorf("Cwd directory was created; should not be pre-created by daemon: %s", env.Cwd)
 				}
 			}
 
@@ -5224,9 +5226,12 @@ func TestPreCheckoutReposInMetaSkill(t *testing.T) {
 	for _, want := range []string{
 		"already checked out",
 		"no `multica repo checkout` needed",
-		"Your working directory is `/some/workspace/workdir/src`",
+		"Your current directory is `src`",
+		"use it as your working directory",
+		"Repos are checked out as siblings in `/some/workspace/workdir`",
+		"access them as `../<repo-name>`",
 		"checked out at `/some/workspace/workdir/repo-a`",
-		"accessible from your working directory as `../repo-a`",
+		"accessible as `../repo-a`",
 		"checked out at `/some/workspace/workdir/repo-b`",
 		"accessible as `../repo-b`",
 	} {
@@ -5463,7 +5468,8 @@ func TestPrepareOpenclawConfigUsesCwdWhenWorkdirEnabled(t *testing.T) {
 	// Read the synthesized config.
 	cfg := mustReadJSON(t, env.OpenclawConfigPath)
 
-	// agents.defaults.workspace must be env.Cwd (workdir/src), not workdir.
+	// agents.defaults.workspace must be env.WorkDir (the root) when custom
+	// workdir is enabled — context files and skills now live at the root.
 	agents, ok := cfg["agents"].(map[string]any)
 	if !ok {
 		t.Fatal("agents key missing or wrong type in openclaw config")
@@ -5476,11 +5482,8 @@ func TestPrepareOpenclawConfigUsesCwdWhenWorkdirEnabled(t *testing.T) {
 	if !ok {
 		t.Fatal("workspace field missing or not a string")
 	}
-	if gotWorkspace != env.Cwd {
-		t.Errorf("agents.defaults.workspace = %q, want env.Cwd = %q", gotWorkspace, env.Cwd)
-	}
-	if gotWorkspace == env.WorkDir {
-		t.Errorf("agents.defaults.workspace = %q, should NOT equal WorkDir = %q", gotWorkspace, env.WorkDir)
+	if gotWorkspace != env.WorkDir {
+		t.Errorf("agents.defaults.workspace = %q, want WorkDir = %q", gotWorkspace, env.WorkDir)
 	}
 	// Cwd should be WorkDir + "/src".
 	if !strings.HasSuffix(env.Cwd, string(filepath.Separator)+"src") {
@@ -5533,10 +5536,10 @@ func TestPrepareOpenclawConfigUsesWorkDirWhenDisabled(t *testing.T) {
 	}
 }
 
-// TestPrepareCursorMcpConfigUsesCwdWhenWorkdirEnabled verifies that the Cursor
-// .cursor/mcp.json is written under env.Cwd (not env.WorkDir) when custom
-// workdir is enabled.
-func TestPrepareCursorMcpConfigUsesCwdWhenWorkdirEnabled(t *testing.T) {
+// TestPrepareCursorMcpConfigUsesWorkDirWhenWorkdirEnabled verifies that the Cursor
+// .cursor/mcp.json is written under env.WorkDir (the root) when custom
+// workdir is enabled — context files and MCP config live at the root.
+func TestPrepareCursorMcpConfigUsesWorkDirWhenWorkdirEnabled(t *testing.T) {
 	t.Parallel()
 
 	workspacesRoot := t.TempDir()
@@ -5556,17 +5559,17 @@ func TestPrepareCursorMcpConfigUsesCwdWhenWorkdirEnabled(t *testing.T) {
 	}
 	defer env.Cleanup(true)
 
-	// .cursor/mcp.json should exist under env.Cwd, not env.WorkDir.
-	cwdMcpPath := filepath.Join(env.Cwd, ".cursor", "mcp.json")
-	if _, err := os.Stat(cwdMcpPath); err != nil {
-		t.Fatalf(".cursor/mcp.json not found under Cwd %q: %v", env.Cwd, err)
+	// .cursor/mcp.json should exist under env.WorkDir (the root), not Cwd.
+	workdirMcpPath := filepath.Join(env.WorkDir, ".cursor", "mcp.json")
+	if _, err := os.Stat(workdirMcpPath); err != nil {
+		t.Fatalf(".cursor/mcp.json not found under WorkDir %q: %v", env.WorkDir, err)
 	}
 
-	// Should NOT exist under WorkDir if Cwd differs from WorkDir.
+	// Should NOT exist under Cwd since the agent_workdir is not created.
 	if env.Cwd != env.WorkDir {
-		workdirMcpPath := filepath.Join(env.WorkDir, ".cursor", "mcp.json")
-		if _, err := os.Stat(workdirMcpPath); !os.IsNotExist(err) {
-			t.Errorf(".cursor/mcp.json unexpectedly exists under WorkDir %q when Cwd differs", env.WorkDir)
+		cwdMcpPath := filepath.Join(env.Cwd, ".cursor", "mcp.json")
+		if _, err := os.Stat(cwdMcpPath); !os.IsNotExist(err) {
+			t.Errorf(".cursor/mcp.json unexpectedly exists under Cwd %q when it should be at WorkDir", env.Cwd)
 		}
 	}
 }

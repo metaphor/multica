@@ -248,13 +248,13 @@ func writeRepositories(b *strings.Builder, ctx TaskContextForEnv) {
 	}
 	b.WriteString("## Repositories\n\n")
 	if ctx.EnableAgentWorkdir {
-		fmt.Fprintf(b, "These repositories are already checked out and ready to use — no `multica repo checkout` needed. Your working directory is `%s/%s`; repos below are sibling directories relative to your Cwd.\n\n", ctx.WorkDir, ctx.AgentWorkdir)
+		fmt.Fprintf(b, "These repositories are already checked out and ready to use — no `multica repo checkout` needed. Your current directory is `%s`; use it as your working directory. Repos are checked out as siblings in `%s`; access them as `../<repo-name>`.\n\n", ctx.AgentWorkdir, ctx.WorkDir)
 		for _, repo := range ctx.Repos {
 			repoName := repoNameFromURL(repo.URL)
 			if repo.Description != "" {
-				fmt.Fprintf(b, "- %s — checked out at `%s/%s` (accessible from your working directory as `../%s`)\n", repo.URL, ctx.WorkDir, repoName, repoName)
-			} else {
-				fmt.Fprintf(b, "- %s — checked out at `%s/%s` (accessible as `../%s`)\n", repo.URL, ctx.WorkDir, repoName, repoName)
+			fmt.Fprintf(b, "- %s — checked out at `%s/%s` (accessible as `../%s`)\n", repo.URL, ctx.WorkDir, repoName, repoName)
+		} else {
+			fmt.Fprintf(b, "- %s — checked out at `%s/%s` (accessible as `../%s`)\n", repo.URL, ctx.WorkDir, repoName, repoName)
 			}
 		}
 	} else {
@@ -301,7 +301,7 @@ func writeProjectContext(b *strings.Builder, ctx TaskContextForEnv) {
 					_ = json.Unmarshal(r.ResourceRef, &payload)
 					if payload.URL != "" {
 						repoName := repoNameFromURL(payload.URL)
-						fmt.Fprintf(b, "- %s → `%s/%s` (accessible from your working directory as `../%s`)\n", payload.URL, ctx.WorkDir, repoName, repoName)
+						fmt.Fprintf(b, "- %s → `%s/%s` (accessible as `../%s`)\n", payload.URL, ctx.WorkDir, repoName, repoName)
 					}
 				}
 			}

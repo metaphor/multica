@@ -361,23 +361,32 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 		}
 	}
 	// Ensure the Cwd directory exists (no-op when workDir was already created).
-	if err := os.MkdirAll(env.Cwd, 0o755); err != nil {
-		return nil, fmt.Errorf("execenv: create Cwd directory %s: %w", env.Cwd, err)
+	// When EnableAgentWorkdir is true, the agent_workdir subdirectory is NOT
+	// pre-created by the daemon — the agent is responsible for creating it.
+	if !params.EnableAgentWorkdir {
+		if err := os.MkdirAll(env.Cwd, 0o755); err != nil {
+			return nil, fmt.Errorf("execenv: create Cwd directory %s: %w", env.Cwd, err)
+		}
 	}
 
 	// Write context files into workdir (skills go to provider-native paths).
-	// When EnableAgentWorkdir is set, write to env.Cwd so the agent sees
-	// context files in its effective working directory, not the workdir
-	// root. env.Cwd falls back to workDir when the feature is off, so
-	// behavior is unchanged for non-custom-workdir tasks.
+	// When EnableAgentWorkdir is true, context files are written to the
+	// workdir root (env.WorkDir), not inside the agent's subdirectory — the
+	// agent discovers them from the root and creates agent_workdir itself.
+	// env.Cwd falls back to WorkDir when the feature is off, so behavior is
+	// unchanged for non-custom-workdir tasks.
 	// Track every file/dir we create in a manifest so CleanupSidecars can
 	// roll a local_directory workdir back to its pre-Prepare state. Cloud
 	// tasks don't need the manifest (the GC loop wipes envRoot wholesale),
 	// but we always write one — it's cheap, keeps Prepare/Reuse symmetric,
 	// and avoids a conditional that would silently disable cleanup if the
 	// local_directory detection logic ever drifts.
+	contextTarget := env.Cwd
+	if params.EnableAgentWorkdir {
+		contextTarget = env.WorkDir
+	}
 	manifest := &sidecarManifest{}
-	if err := writeContextFiles(env.Cwd, params.Provider, params.Task, manifest); err != nil {
+	if err := writeContextFiles(contextTarget, params.Provider, params.Task, manifest); err != nil {
 		return nil, fmt.Errorf("execenv: write context files: %w", err)
 	}
 
@@ -440,7 +449,7 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 	// this per-task data dir can load, so user-global MCP servers do not leak
 	// into managed-MCP runs.
 	if params.Provider == "cursor" {
-		cursorDataDir, err := prepareCursorMcpConfig(envRoot, env.Cwd, params.McpConfig, params.CursorMcpAuthSource, manifest)
+		cursorDataDir, err := prepareCursorMcpConfig(envRoot, contextTarget, params.McpConfig, params.CursorMcpAuthSource, manifest)
 		if err != nil {
 			return nil, fmt.Errorf("execenv: prepare cursor mcp config: %w", err)
 		}
@@ -452,14 +461,11 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 	}
 
 	// For OpenClaw, synthesize a per-task config that pins workspace to
-	// env.Cwd (which equals workDir when custom workdir is disabled). The
-	// skill scanner then reads {env.Cwd}/skills/ (written by
-	// writeContextFiles above). Fail closed on errors: a malformed user
-	// config that the openclaw CLI can't read is a real problem and
-	// silently degrading to a minimal config would mask it by booting
-	// OpenClaw without the agents / providers / API keys it expects.
+	// contextTarget (which equals env.WorkDir when custom workdir is enabled,
+	// and env.Cwd otherwise). The skill scanner then reads from the workdir
+	// root. Fail closed on errors.
 	if params.Provider == "openclaw" {
-		result, err := prepareOpenclawConfig(envRoot, env.Cwd, OpenclawConfigPrep{
+		result, err := prepareOpenclawConfig(envRoot, contextTarget, OpenclawConfigPrep{
 			OpenclawBin: params.OpenclawBin,
 			McpConfig:   params.McpConfig,
 			Gateway:     params.OpenclawGateway,
