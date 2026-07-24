@@ -137,6 +137,7 @@ func (h *Handler) handleGitLabMergeRequestEvent(ctx context.Context, conn db.Git
 		MergedAt:            mergedAt,
 		ClosedAt:            closedAt,
 		MergeableState:      mergeable,
+		ConnectionID:        conn.ID,
 		ClearMergeableState: clearMergeable,
 	})
 	if err != nil {

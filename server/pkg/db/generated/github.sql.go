@@ -307,7 +307,7 @@ func (q *Queries) GetGitHubInstallationByID(ctx context.Context, id pgtype.UUID)
 }
 
 const getGitHubPullRequest = `-- name: GetGitHubPullRequest :one
-SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, provider FROM github_pull_request
+SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, provider, connection_id FROM github_pull_request
 WHERE workspace_id = $1 AND provider = 'github' AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4
 `
 
@@ -351,6 +351,7 @@ func (q *Queries) GetGitHubPullRequest(ctx context.Context, arg GetGitHubPullReq
 		&i.Deletions,
 		&i.ChangedFiles,
 		&i.Provider,
+		&i.ConnectionID,
 	)
 	return i, err
 }
@@ -419,7 +420,7 @@ func (q *Queries) GetGitLabConnectionBySecretHash(ctx context.Context, webhookSe
 }
 
 const getGitLabMergeRequest = `-- name: GetGitLabMergeRequest :one
-SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, provider FROM github_pull_request
+SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, provider, connection_id FROM github_pull_request
 WHERE workspace_id = $1 AND provider = 'gitlab' AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4
 `
 
@@ -463,6 +464,7 @@ func (q *Queries) GetGitLabMergeRequest(ctx context.Context, arg GetGitLabMergeR
 		&i.Deletions,
 		&i.ChangedFiles,
 		&i.Provider,
+		&i.ConnectionID,
 	)
 	return i, err
 }
@@ -503,6 +505,23 @@ func (q *Queries) GetIssuePullRequestCloseAggregate(ctx context.Context, issueID
 	return i, err
 }
 
+const getIssuePullRequestLink = `-- name: GetIssuePullRequestLink :one
+SELECT pull_request_id FROM issue_pull_request
+WHERE issue_id = $1 AND pull_request_id = $2
+`
+
+type GetIssuePullRequestLinkParams struct {
+	IssueID       pgtype.UUID `json:"issue_id"`
+	PullRequestID pgtype.UUID `json:"pull_request_id"`
+}
+
+func (q *Queries) GetIssuePullRequestLink(ctx context.Context, arg GetIssuePullRequestLinkParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getIssuePullRequestLink, arg.IssueID, arg.PullRequestID)
+	var pull_request_id pgtype.UUID
+	err := row.Scan(&pull_request_id)
+	return pull_request_id, err
+}
+
 const getIssueReviewHeadSha = `-- name: GetIssueReviewHeadSha :one
 SELECT pr.head_sha
 FROM github_pull_request pr
@@ -530,7 +549,7 @@ func (q *Queries) GetIssueReviewHeadSha(ctx context.Context, issueID pgtype.UUID
 
 const getLatestOpenGitLabMRByHeadSha = `-- name: GetLatestOpenGitLabMRByHeadSha :one
 
-SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, provider FROM github_pull_request
+SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, provider, connection_id FROM github_pull_request
 WHERE workspace_id = $1
   AND provider = 'gitlab'
   AND repo_owner = $2
@@ -584,6 +603,7 @@ func (q *Queries) GetLatestOpenGitLabMRByHeadSha(ctx context.Context, arg GetLat
 		&i.Deletions,
 		&i.ChangedFiles,
 		&i.Provider,
+		&i.ConnectionID,
 	)
 	return i, err
 }
@@ -602,6 +622,49 @@ func (q *Queries) GetPendingGitHubInstallation(ctx context.Context, installation
 		&i.AccountAvatarUrl,
 		&i.ReceivedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getPullRequestByID = `-- name: GetPullRequestByID :one
+SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, provider, connection_id FROM github_pull_request
+WHERE id = $1 AND workspace_id = $2
+`
+
+type GetPullRequestByIDParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) GetPullRequestByID(ctx context.Context, arg GetPullRequestByIDParams) (GithubPullRequest, error) {
+	row := q.db.QueryRow(ctx, getPullRequestByID, arg.ID, arg.WorkspaceID)
+	var i GithubPullRequest
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstallationID,
+		&i.RepoOwner,
+		&i.RepoName,
+		&i.PrNumber,
+		&i.Title,
+		&i.State,
+		&i.HtmlUrl,
+		&i.Branch,
+		&i.AuthorLogin,
+		&i.AuthorAvatarUrl,
+		&i.MergedAt,
+		&i.ClosedAt,
+		&i.PrCreatedAt,
+		&i.PrUpdatedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.HeadSha,
+		&i.MergeableState,
+		&i.Additions,
+		&i.Deletions,
+		&i.ChangedFiles,
+		&i.Provider,
+		&i.ConnectionID,
 	)
 	return i, err
 }
@@ -1189,7 +1252,7 @@ ON CONFLICT (workspace_id, provider, repo_owner, repo_name, pr_number) DO UPDATE
     deletions     = EXCLUDED.deletions,
     changed_files = EXCLUDED.changed_files,
     updated_at = now()
-RETURNING id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, provider
+RETURNING id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, provider, connection_id
 `
 
 type UpsertGitHubPullRequestParams struct {
@@ -1279,6 +1342,7 @@ func (q *Queries) UpsertGitHubPullRequest(ctx context.Context, arg UpsertGitHubP
 		&i.Deletions,
 		&i.ChangedFiles,
 		&i.Provider,
+		&i.ConnectionID,
 	)
 	return i, err
 }
@@ -1290,13 +1354,13 @@ INSERT INTO github_pull_request (
     title, state, html_url, branch, author_login, author_avatar_url,
     merged_at, closed_at, pr_created_at, pr_updated_at,
     head_sha, mergeable_state,
-    additions, deletions, changed_files
+    additions, deletions, changed_files, connection_id
 ) VALUES (
     $1, 'gitlab', 0, $2, $3, $4,
     $5, $6, $7, $14, $15, $16,
     $17, $18, $8, $9,
     $10, $19,
-    $11, $12, $13
+    $11, $12, $13, $20
 )
 ON CONFLICT (workspace_id, provider, repo_owner, repo_name, pr_number) DO UPDATE SET
     installation_id = EXCLUDED.installation_id,
@@ -1311,15 +1375,16 @@ ON CONFLICT (workspace_id, provider, repo_owner, repo_name, pr_number) DO UPDATE
     pr_updated_at = EXCLUDED.pr_updated_at,
     head_sha = EXCLUDED.head_sha,
     mergeable_state = CASE
-        WHEN COALESCE($20::boolean, FALSE) THEN NULL
+        WHEN COALESCE($21::boolean, FALSE) THEN NULL
         WHEN EXCLUDED.mergeable_state IS NOT NULL THEN EXCLUDED.mergeable_state
         ELSE github_pull_request.mergeable_state
     END,
     additions     = EXCLUDED.additions,
     deletions     = EXCLUDED.deletions,
     changed_files = EXCLUDED.changed_files,
+    connection_id = EXCLUDED.connection_id,
     updated_at = now()
-RETURNING id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, provider
+RETURNING id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, provider, connection_id
 `
 
 type UpsertGitLabMergeRequestParams struct {
@@ -1342,6 +1407,7 @@ type UpsertGitLabMergeRequestParams struct {
 	MergedAt            pgtype.Timestamptz `json:"merged_at"`
 	ClosedAt            pgtype.Timestamptz `json:"closed_at"`
 	MergeableState      pgtype.Text        `json:"mergeable_state"`
+	ConnectionID        pgtype.UUID        `json:"connection_id"`
 	ClearMergeableState pgtype.Bool        `json:"clear_mergeable_state"`
 }
 
@@ -1371,6 +1437,7 @@ func (q *Queries) UpsertGitLabMergeRequest(ctx context.Context, arg UpsertGitLab
 		arg.MergedAt,
 		arg.ClosedAt,
 		arg.MergeableState,
+		arg.ConnectionID,
 		arg.ClearMergeableState,
 	)
 	var i GithubPullRequest
@@ -1399,6 +1466,7 @@ func (q *Queries) UpsertGitLabMergeRequest(ctx context.Context, arg UpsertGitLab
 		&i.Deletions,
 		&i.ChangedFiles,
 		&i.Provider,
+		&i.ConnectionID,
 	)
 	return i, err
 }

@@ -129,6 +129,14 @@ RETURNING *;
 SELECT * FROM github_pull_request
 WHERE workspace_id = $1 AND provider = 'github' AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4;
 
+-- name: GetPullRequestByID :one
+SELECT * FROM github_pull_request
+WHERE id = $1 AND workspace_id = $2;
+
+-- name: GetIssuePullRequestLink :one
+SELECT pull_request_id FROM issue_pull_request
+WHERE issue_id = $1 AND pull_request_id = $2;
+
 -- name: ListPullRequestsByIssue :many
 -- Returns the issue's linked PRs with the aggregated check-suite counts for
 -- the PR's CURRENT head SHA. The `issue_prs` CTE narrows to this issue's PR
@@ -389,13 +397,13 @@ INSERT INTO github_pull_request (
     title, state, html_url, branch, author_login, author_avatar_url,
     merged_at, closed_at, pr_created_at, pr_updated_at,
     head_sha, mergeable_state,
-    additions, deletions, changed_files
+    additions, deletions, changed_files, connection_id
 ) VALUES (
     $1, 'gitlab', 0, $2, $3, $4,
     $5, $6, $7, sqlc.narg('branch'), sqlc.narg('author_login'), sqlc.narg('author_avatar_url'),
     sqlc.narg('merged_at'), sqlc.narg('closed_at'), $8, $9,
     $10, sqlc.narg('mergeable_state'),
-    $11, $12, $13
+    $11, $12, $13, sqlc.arg('connection_id')
 )
 ON CONFLICT (workspace_id, provider, repo_owner, repo_name, pr_number) DO UPDATE SET
     installation_id = EXCLUDED.installation_id,
@@ -417,6 +425,7 @@ ON CONFLICT (workspace_id, provider, repo_owner, repo_name, pr_number) DO UPDATE
     additions     = EXCLUDED.additions,
     deletions     = EXCLUDED.deletions,
     changed_files = EXCLUDED.changed_files,
+    connection_id = EXCLUDED.connection_id,
     updated_at = now()
 RETURNING *;
 
