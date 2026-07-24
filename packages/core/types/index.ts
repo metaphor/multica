@@ -131,6 +131,8 @@ export type {
   GitLabHookTarget,
   GitLabConnection,
   GitLabConnectionListResponse,
+  MergeRequestDiffFile,
+  MergeRequestDiffsResponse,
 } from "./github";
 export type {
   LarkInstallation,

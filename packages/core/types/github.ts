@@ -114,3 +114,22 @@ export interface GitLabConnectionListResponse {
    * safety. */
   can_manage?: boolean;
 }
+
+/** One file's diff inside a merge request, mirroring the server's
+ * `ChangedFile` JSON from `GET /api/issues/{id}/pull-requests/{prId}/diffs`.
+ * `patch` is the unified-diff hunk text (empty for binary or too-large
+ * files); the rendering layer decides how to display `collapsed` /
+ * `tooLarge` / `isGenerated` files. */
+export interface MergeRequestDiffFile {
+  oldPath: string;
+  newPath: string;
+  status: "added" | "modified" | "deleted" | "renamed";
+  patch: string;
+  isGenerated: boolean;
+  collapsed: boolean;
+  tooLarge: boolean;
+}
+
+export interface MergeRequestDiffsResponse {
+  files: MergeRequestDiffFile[];
+}

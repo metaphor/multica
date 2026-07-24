@@ -126,6 +126,7 @@ import type {
   GitHubConnectResponse,
   GitLabConnection,
   GitLabConnectionListResponse,
+  MergeRequestDiffsResponse,
   ListLarkInstallationsResponse,
   BeginLarkInstallResponse,
   LarkInstallStatusResponse,
@@ -2689,6 +2690,10 @@ export class ApiClient {
 
   async listIssuePullRequests(issueId: string): Promise<{ pull_requests: GitHubPullRequest[] }> {
     return this.fetch(`/api/issues/${issueId}/pull-requests`);
+  }
+
+  async getMergeRequestDiffs(issueId: string, prId: string): Promise<MergeRequestDiffsResponse> {
+    return this.fetch(`/api/issues/${issueId}/pull-requests/${prId}/diffs`);
   }
 
   // GitLab integration
