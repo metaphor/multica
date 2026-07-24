@@ -262,6 +262,7 @@
     "pull_request_card_files_count_other": "{{count}} ファイル",
     "pull_request_card_show_more": "他 {{count}} 件を表示",
     "pull_request_card_show_less": "折りたたむ",
+    "open_merge_request_external": "GitLab でマージリクエストを開く",
     "prop_status": "ステータス",
     "prop_priority": "優先度",
     "prop_stage": "ステージ",

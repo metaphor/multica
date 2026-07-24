@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   CheckCircle2,
   CircleDashed,
+  ExternalLink,
   GitMerge,
   GitPullRequest,
   GitPullRequestArrow,
@@ -27,6 +28,7 @@ import type {
   GitHubPullRequestState,
 } from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
+import { useModalStore } from "@multica/core/modals";
 import { useT } from "../../i18n";
 
 type IssuesT = ReturnType<typeof useT<"issues">>["t"];
@@ -82,12 +84,12 @@ export function PullRequestList({ issueId }: { issueId: string }) {
   return (
     <div className="space-y-1">
       {expandedHead.map((pr) => (
-        <PullRequestRow key={pr.id} pr={pr} />
+        <PullRequestRow key={pr.id} pr={pr} issueId={issueId} />
       ))}
       {useCollapse ? (
         <div className="space-y-1">
           {expanded
-            ? collapsedTail.map((pr) => <PullRequestRow key={pr.id} pr={pr} />)
+            ? collapsedTail.map((pr) => <PullRequestRow key={pr.id} pr={pr} issueId={issueId} />)
             : null}
           <button
             type="button"
@@ -104,8 +106,9 @@ export function PullRequestList({ issueId }: { issueId: string }) {
   );
 }
 
-function PullRequestRow({ pr }: { pr: GitHubPullRequest }) {
+function PullRequestRow({ pr, issueId }: { pr: GitHubPullRequest; issueId: string }) {
   const { t } = useT("issues");
+  const openModal = useModalStore((s) => s.open);
   const cfg = STATE_ICON[pr.state] ?? { icon: GitPullRequest, className: "" };
   const StateIcon = cfg.icon;
   const kind = derivePullRequestStatusKind({
@@ -130,41 +133,64 @@ function PullRequestRow({ pr }: { pr: GitHubPullRequest }) {
   const statusText = useStatusText(kind);
   const draftPrefix = pr.state === "draft";
   const stateLabel = getStateLabel(pr.state, t);
+  const isGitLab = pr.provider === "gitlab";
+
+  const handleRowClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    if (!isGitLab) return;
+    e.preventDefault();
+    openModal("merge-request-diff", { issueId, prId: pr.id, title: pr.title });
+  };
 
   return (
-    <a
+    <div
       data-testid="pull-request-row"
-      href={pr.html_url}
-      target="_blank"
-      rel="noreferrer noopener"
       className={cn(
         "flex items-start gap-2 rounded-md px-2 py-1.5 -mx-2 hover:bg-accent/50 transition-colors group",
         draftPrefix ? "opacity-80" : null,
       )}
     >
-      <StateIcon className={cn("h-3.5 w-3.5 mt-0.5 shrink-0", cfg.className)} />
-      <div className="min-w-0 flex-1">
-        <p className="text-xs font-medium leading-snug truncate group-hover:text-foreground">
-          {pr.title}
-        </p>
-        <p className="text-[11px] text-muted-foreground truncate">
-          {pr.repo_owner}/{pr.repo_name}#{pr.number} · {stateLabel}
-          <ProviderPill provider={pr.provider} />
-          {pr.author_login ? ` · @${pr.author_login}` : null}
-        </p>
-        <PullRequestRowDetails
-          pr={pr}
-          segments={segments}
-          showStats={showStats}
-          statusText={
-            draftPrefix
-              ? t(($) => $.detail.pull_request_card_draft_prefix, { status: statusText })
-              : statusText
-          }
-          statusKind={kind}
-        />
-      </div>
-    </a>
+      <a
+        href={pr.html_url}
+        target="_blank"
+        rel="noreferrer noopener"
+        onClick={handleRowClick}
+        className="flex items-start gap-2 min-w-0 flex-1"
+      >
+        <StateIcon className={cn("h-3.5 w-3.5 mt-0.5 shrink-0", cfg.className)} />
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-medium leading-snug truncate group-hover:text-foreground">
+            {pr.title}
+          </p>
+          <p className="text-[11px] text-muted-foreground truncate">
+            {pr.repo_owner}/{pr.repo_name}#{pr.number} · {stateLabel}
+            <ProviderPill provider={pr.provider} />
+            {pr.author_login ? ` · @${pr.author_login}` : null}
+          </p>
+          <PullRequestRowDetails
+            pr={pr}
+            segments={segments}
+            showStats={showStats}
+            statusText={
+              draftPrefix
+                ? t(($) => $.detail.pull_request_card_draft_prefix, { status: statusText })
+                : statusText
+            }
+            statusKind={kind}
+          />
+        </div>
+      </a>
+      {isGitLab ? (
+        <a
+          href={pr.html_url}
+          target="_blank"
+          rel="noreferrer noopener"
+          aria-label={t(($) => $.detail.open_merge_request_external)}
+          className="shrink-0 mt-0.5 rounded-sm p-1 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-accent/60 transition-all"
+        >
+          <ExternalLink className="h-3.5 w-3.5" />
+        </a>
+      ) : null}
+    </div>
   );
 }
 

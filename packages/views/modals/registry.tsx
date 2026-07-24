@@ -9,6 +9,7 @@ import { FeedbackModal } from "./feedback";
 import { SetParentIssueModal } from "./set-parent-issue";
 import { AddChildIssueModal } from "./add-child-issue";
 import { DeleteIssueConfirmModal } from "./delete-issue-confirm";
+import { MergeRequestDiffModal } from "../issues/components/merge-request-diff-modal";
 import { RunConfirmModal } from "./run-confirm";
 
 export function ModalRegistry() {
@@ -39,6 +40,8 @@ export function ModalRegistry() {
       return <DeleteIssueConfirmModal onClose={close} data={data} />;
     case "issue-run-confirm":
       return <RunConfirmModal onClose={close} data={data} />;
+    case "merge-request-diff":
+      return <MergeRequestDiffModal onClose={close} data={data} />;
     default:
       return null;
   }

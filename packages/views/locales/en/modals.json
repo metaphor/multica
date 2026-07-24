@@ -140,6 +140,15 @@
     "local_invalid_dir": "This directory can't be used. Pick another.",
     "local_hint": "Agents on other machines won't see this path — they'll fail to start. Use repos for shared work."
   },
+  "merge_request_diff": {
+    "title": "{{title}}",
+    "loading": "Loading diff…",
+    "empty": "No changed files in this merge request.",
+    "error_409": "This merge request predates connection tracking — reconnect or wait for the next webhook sync.",
+    "error_400": "Diff viewing is GitLab-only for now.",
+    "error_generic": "Failed to load diff.",
+    "retry": "Retry"
+  },
   "create_issue": {
     "sr_manual": "New Issue",
     "sr_agent": "Quick create issue",

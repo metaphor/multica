@@ -262,6 +262,7 @@
     "pull_request_card_files_count_other": "{{count}} 个文件",
     "pull_request_card_show_more": "展开剩余 {{count}} 个",
     "pull_request_card_show_less": "收起",
+    "open_merge_request_external": "在 GitLab 中打开合并请求",
     "prop_status": "状态",
     "prop_priority": "优先级",
     "prop_stage": "阶段",

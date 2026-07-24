@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, expect, it, vi, beforeEach } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
 import type { GitHubPullRequest } from "@multica/core/types";
@@ -7,6 +7,13 @@ import enCommon from "../../locales/en/common.json";
 import enIssues from "../../locales/en/issues.json";
 
 const TEST_RESOURCES = { en: { common: enCommon, issues: enIssues } };
+
+const mockOpenModal = vi.fn();
+
+vi.mock("@multica/core/modals", () => ({
+  useModalStore: (selector: (s: { open: typeof mockOpenModal }) => typeof mockOpenModal) =>
+    selector({ open: mockOpenModal }),
+}));
 
 vi.mock("@multica/core/github/queries", async () => {
   const actual = await vi.importActual<typeof import("@multica/core/github/queries")>(
@@ -25,6 +32,10 @@ vi.mock("@multica/core/github/queries", async () => {
 import { PullRequestList } from "./pull-request-list";
 
 let mockPRs: GitHubPullRequest[] = [];
+
+beforeEach(() => {
+  mockOpenModal.mockClear();
+});
 
 function makePR(overrides: Partial<GitHubPullRequest> = {}): GitHubPullRequest {
   return {
@@ -250,5 +261,31 @@ describe("PullRequestList sidebar rows", () => {
     // Both badges should be present
     expect(screen.getAllByText("PR").length).toBe(1);
     expect(screen.getAllByText("MR").length).toBe(1);
+  });
+
+  it("opens the diff modal when a gitlab row is clicked", async () => {
+    mockPRs = [makePR({ id: "gl", provider: "gitlab", title: "GL MR" })];
+    renderList();
+    await waitForRender();
+    const row = screen.getByTestId("pull-request-row");
+    const link = row.querySelector("a");
+    expect(link).not.toBeNull();
+    fireEvent.click(link!);
+    expect(mockOpenModal).toHaveBeenCalledTimes(1);
+    expect(mockOpenModal).toHaveBeenCalledWith("merge-request-diff", {
+      issueId: "issue-1",
+      prId: "gl",
+      title: "GL MR",
+    });
+  });
+
+  it("keeps github rows as external links", async () => {
+    mockPRs = [makePR({ id: "gh", provider: "github", title: "GH PR", html_url: "https://github.test/pr/1" })];
+    renderList();
+    await waitForRender();
+    const row = screen.getByTestId("pull-request-row");
+    const link = row.querySelector('a[href="https://github.test/pr/1"]');
+    expect(link).toBeInTheDocument();
+    expect(mockOpenModal).not.toHaveBeenCalled();
   });
 });
