@@ -18,12 +18,12 @@ import { labelKeys } from "../labels/queries";
 import { propertyKeys } from "../properties/queries";
 import {
   agentTaskSnapshotKeys,
+  workspaceWorkingAgentsKeys,
   agentActivityKeys,
   agentRunCountsKeys,
   agentTasksKeys,
 } from "../agents/queries";
 import { githubKeys } from "../github/queries";
-import { gitlabKeys } from "../gitlab/queries";
 import { larkKeys } from "../lark/queries";
 import { slackKeys } from "../slack/queries";
 import {
@@ -193,6 +193,7 @@ function patchLatestChatMessagePage(
 type ChatSessionUpdatedPayload = {
   chat_session_id: string;
   title?: string;
+  project_id?: string | null;
   pinned?: boolean;
   status?: "active" | "archived";
   updated_at?: string;
@@ -227,6 +228,7 @@ export function applyChatSessionUpdatedToCache(
         ? {
             ...s,
             title: payload.title ?? s.title,
+            ...("project_id" in payload ? { project_id: payload.project_id } : {}),
             pinned: payload.pinned ?? s.pinned,
             status: payload.status ?? s.status,
             updated_at: payload.updated_at ?? s.updated_at,
@@ -495,6 +497,7 @@ function invalidateWorkspaceScopedQueries(qc: QueryClient): void {
     qc.invalidateQueries({ queryKey: runtimeKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: autopilotKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: agentTaskSnapshotKeys.all(wsId) });
+    qc.invalidateQueries({ queryKey: workspaceWorkingAgentsKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: agentActivityKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: agentRunCountsKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: chatKeys.all(wsId) });
@@ -602,6 +605,7 @@ export function useRealtimeSync(
         const wsId = getCurrentWsId();
         if (wsId) {
           qc.invalidateQueries({ queryKey: workspaceKeys.agents(wsId) });
+          qc.invalidateQueries({ queryKey: workspaceWorkingAgentsKeys.all(wsId) });
           // Squad members status is derived per agent, so any agent
           // change (status flip, archive, runtime swap) needs to refresh the
           // per-squad members-status cache without refetching the static squad
@@ -674,10 +678,6 @@ export function useRealtimeSync(
         const wsId = getCurrentWsId();
         if (wsId) qc.invalidateQueries({ queryKey: githubKeys.installations(wsId) });
       },
-      gitlab_connection: () => {
-        const wsId = getCurrentWsId();
-        if (wsId) qc.invalidateQueries({ queryKey: gitlabKeys.connections(wsId) });
-      },
       lark_installation: () => {
         const wsId = getCurrentWsId();
         if (wsId) qc.invalidateQueries({ queryKey: larkKeys.installations(wsId) });
@@ -685,6 +685,10 @@ export function useRealtimeSync(
       slack_installation: () => {
         const wsId = getCurrentWsId();
         if (wsId) qc.invalidateQueries({ queryKey: slackKeys.installations(wsId) });
+      },
+      vcs_connection: () => {
+        const wsId = getCurrentWsId();
+        if (wsId) qc.invalidateQueries({ queryKey: ["vcs", wsId] });
       },
       pull_request: () => {
         // PR list is keyed by issue id, not workspace, so we invalidate all
@@ -700,6 +704,12 @@ export function useRealtimeSync(
         const wsId = getCurrentWsId();
         if (!wsId) return;
         qc.invalidateQueries({ queryKey: agentTaskSnapshotKeys.list(wsId) });
+        qc.invalidateQueries({ queryKey: workspaceWorkingAgentsKeys.all(wsId) });
+        // The Table working-agent shortcut derives an assignee set from the
+        // projection above. Refresh its server-owned graph alongside that set
+        // so rows/groups/facets cannot remain on an old task transition while
+        // the projection refetches (global staleTime is Infinity).
+        qc.invalidateQueries({ queryKey: issueKeys.tableAll(wsId) });
         // 30d activity series shares the same lifecycle signal — any task
         // completion / failure shifts the histogram. (Dispatch alone
         // doesn't change a completed_at-anchored series, but invalidating
@@ -860,7 +870,12 @@ export function useRealtimeSync(
     const unsubPropertyChanged = ["property:created", "property:updated"].map((event) =>
       ws.on(event as "property:created" | "property:updated", () => {
         const wsId = getCurrentWsId();
-        if (wsId) qc.invalidateQueries({ queryKey: propertyKeys.all(wsId) });
+        if (wsId) {
+          qc.invalidateQueries({ queryKey: propertyKeys.all(wsId) });
+          // Group order, supported group types, and unavailable option values
+          // are derived from the property definition, not just issue rows.
+          qc.invalidateQueries({ queryKey: issueKeys.tableAll(wsId) });
+        }
       }),
     );
 

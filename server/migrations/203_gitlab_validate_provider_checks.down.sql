@@ -1,4 +1,0 @@
--- VALIDATE CONSTRAINT has no symmetric reverse operation — once validated,
--- the constraint is part of the table definition. This down migration is
--- intentionally a no-op. The CHECK constraints themselves are dropped by
--- migration 202 down.

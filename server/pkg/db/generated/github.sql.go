@@ -13,9 +13,9 @@ import (
 
 const createGitHubInstallation = `-- name: CreateGitHubInstallation :one
 INSERT INTO github_installation (
-    workspace_id, provider, installation_id, account_login, account_type, account_avatar_url, connected_by_id
+    workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id
 ) VALUES (
-    $1, 'github', $2, $3, $4, $5, $6
+    $1, $2, $3, $4, $5, $6
 )
 ON CONFLICT (workspace_id, installation_id) DO UPDATE SET
     account_login = EXCLUDED.account_login,
@@ -23,7 +23,7 @@ ON CONFLICT (workspace_id, installation_id) DO UPDATE SET
     account_avatar_url = EXCLUDED.account_avatar_url,
     connected_by_id = EXCLUDED.connected_by_id,
     updated_at = now()
-RETURNING id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at, provider, instance_url, display_name, access_token_ciphertext, webhook_secret_hash, webhook_secret_ciphertext, hooks
+RETURNING id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at
 `
 
 type CreateGitHubInstallationParams struct {
@@ -55,13 +55,6 @@ func (q *Queries) CreateGitHubInstallation(ctx context.Context, arg CreateGitHub
 		&i.ConnectedByID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.Provider,
-		&i.InstanceUrl,
-		&i.DisplayName,
-		&i.AccessTokenCiphertext,
-		&i.WebhookSecretHash,
-		&i.WebhookSecretCiphertext,
-		&i.Hooks,
 	)
 	return i, err
 }
@@ -81,7 +74,7 @@ func (q *Queries) DeleteGitHubInstallation(ctx context.Context, arg DeleteGitHub
 }
 
 const deleteGitHubInstallationByInstallationID = `-- name: DeleteGitHubInstallationByInstallationID :many
-DELETE FROM github_installation WHERE installation_id = $1 AND provider = 'github'
+DELETE FROM github_installation WHERE installation_id = $1
 RETURNING id, workspace_id
 `
 
@@ -113,21 +106,6 @@ func (q *Queries) DeleteGitHubInstallationByInstallationID(ctx context.Context, 
 	return items, nil
 }
 
-const deleteGitLabConnection = `-- name: DeleteGitLabConnection :exec
-DELETE FROM github_installation
-WHERE id = $1 AND workspace_id = $2 AND provider = 'gitlab'
-`
-
-type DeleteGitLabConnectionParams struct {
-	ID          pgtype.UUID `json:"id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-func (q *Queries) DeleteGitLabConnection(ctx context.Context, arg DeleteGitLabConnectionParams) error {
-	_, err := q.db.Exec(ctx, deleteGitLabConnection, arg.ID, arg.WorkspaceID)
-	return err
-}
-
 const deletePendingGitHubInstallation = `-- name: DeletePendingGitHubInstallation :exec
 DELETE FROM github_pending_installation WHERE installation_id = $1
 `
@@ -137,148 +115,8 @@ func (q *Queries) DeletePendingGitHubInstallation(ctx context.Context, installat
 	return err
 }
 
-const deleteStalePendingCheckSuites = `-- name: DeleteStalePendingCheckSuites :exec
-DELETE FROM github_pending_check_suite
-WHERE received_at < now() - interval '7 days'
-`
-
-// Purge check_suite/pipeline stash rows older than 7 days across both
-// providers. Handles the pr_number=0 fallback rows from DrainPendingGitLabPipelinesForMR
-// that never got a real iid assigned.
-func (q *Queries) DeleteStalePendingCheckSuites(ctx context.Context) error {
-	_, err := q.db.Exec(ctx, deleteStalePendingCheckSuites)
-	return err
-}
-
-const drainPendingCheckSuitesForPR = `-- name: DrainPendingCheckSuitesForPR :many
-DELETE FROM github_pending_check_suite
-WHERE workspace_id = $1
-  AND provider = 'github'
-  AND repo_owner   = $2
-  AND repo_name    = $3
-  AND pr_number    = $4
-RETURNING suite_id, head_sha, app_id, conclusion, status, suite_updated_at
-`
-
-type DrainPendingCheckSuitesForPRParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	RepoOwner   string      `json:"repo_owner"`
-	RepoName    string      `json:"repo_name"`
-	PrNumber    int32       `json:"pr_number"`
-}
-
-type DrainPendingCheckSuitesForPRRow struct {
-	SuiteID        int64              `json:"suite_id"`
-	HeadSha        string             `json:"head_sha"`
-	AppID          int64              `json:"app_id"`
-	Conclusion     pgtype.Text        `json:"conclusion"`
-	Status         string             `json:"status"`
-	SuiteUpdatedAt pgtype.Timestamptz `json:"suite_updated_at"`
-}
-
-// Atomically reads + deletes all pending suites for the given PR address.
-// Caller replays each row through UpsertPullRequestCheckSuite. RETURNING
-// gives us the payloads we need without a separate SELECT, so two parallel
-// handlers racing on the same PR can't double-apply the same row.
-func (q *Queries) DrainPendingCheckSuitesForPR(ctx context.Context, arg DrainPendingCheckSuitesForPRParams) ([]DrainPendingCheckSuitesForPRRow, error) {
-	rows, err := q.db.Query(ctx, drainPendingCheckSuitesForPR,
-		arg.WorkspaceID,
-		arg.RepoOwner,
-		arg.RepoName,
-		arg.PrNumber,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []DrainPendingCheckSuitesForPRRow{}
-	for rows.Next() {
-		var i DrainPendingCheckSuitesForPRRow
-		if err := rows.Scan(
-			&i.SuiteID,
-			&i.HeadSha,
-			&i.AppID,
-			&i.Conclusion,
-			&i.Status,
-			&i.SuiteUpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const drainPendingGitLabPipelinesForMR = `-- name: DrainPendingGitLabPipelinesForMR :many
-DELETE FROM github_pending_check_suite
-WHERE workspace_id = $1
-  AND provider = 'gitlab'
-  AND repo_owner = $2
-  AND repo_name = $3
-  AND (pr_number = $4 OR (pr_number = 0 AND head_sha = $5))
-RETURNING workspace_id, installation_id, repo_owner, repo_name, pr_number, suite_id, head_sha, app_id, conclusion, status, suite_updated_at, received_at, provider
-`
-
-type DrainPendingGitLabPipelinesForMRParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	RepoOwner   string      `json:"repo_owner"`
-	RepoName    string      `json:"repo_name"`
-	PrNumber    int32       `json:"pr_number"`
-	HeadSha     string      `json:"head_sha"`
-}
-
-// Atomically reads + deletes all pending pipeline rows for the given MR.
-// The pr_number=0 fallback handles the stash row inserted before we knew the
-// MR iid; rows with pr_number=0 AND an unknown head_sha are sticky and will
-// be cleaned up by DeleteStalePendingCheckSuites.
-// Comment: rows with pr_number=0 but a different head_sha are permanent
-// no-ops: (pr_number=$4) never matches them and (pr_number=0 AND head_sha=$5)
-// only matches the actual stash row for this MR's head.
-func (q *Queries) DrainPendingGitLabPipelinesForMR(ctx context.Context, arg DrainPendingGitLabPipelinesForMRParams) ([]GithubPendingCheckSuite, error) {
-	rows, err := q.db.Query(ctx, drainPendingGitLabPipelinesForMR,
-		arg.WorkspaceID,
-		arg.RepoOwner,
-		arg.RepoName,
-		arg.PrNumber,
-		arg.HeadSha,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []GithubPendingCheckSuite{}
-	for rows.Next() {
-		var i GithubPendingCheckSuite
-		if err := rows.Scan(
-			&i.WorkspaceID,
-			&i.InstallationID,
-			&i.RepoOwner,
-			&i.RepoName,
-			&i.PrNumber,
-			&i.SuiteID,
-			&i.HeadSha,
-			&i.AppID,
-			&i.Conclusion,
-			&i.Status,
-			&i.SuiteUpdatedAt,
-			&i.ReceivedAt,
-			&i.Provider,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const getGitHubInstallationByID = `-- name: GetGitHubInstallationByID :one
-SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at, provider, instance_url, display_name, access_token_ciphertext, webhook_secret_hash, webhook_secret_ciphertext, hooks FROM github_installation
+SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at FROM github_installation
 WHERE id = $1
 `
 
@@ -295,20 +133,13 @@ func (q *Queries) GetGitHubInstallationByID(ctx context.Context, id pgtype.UUID)
 		&i.ConnectedByID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.Provider,
-		&i.InstanceUrl,
-		&i.DisplayName,
-		&i.AccessTokenCiphertext,
-		&i.WebhookSecretHash,
-		&i.WebhookSecretCiphertext,
-		&i.Hooks,
 	)
 	return i, err
 }
 
 const getGitHubPullRequest = `-- name: GetGitHubPullRequest :one
-SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, provider, connection_id FROM github_pull_request
-WHERE workspace_id = $1 AND provider = 'github' AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4
+SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at FROM github_pull_request
+WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4
 `
 
 type GetGitHubPullRequestParams struct {
@@ -350,121 +181,11 @@ func (q *Queries) GetGitHubPullRequest(ctx context.Context, arg GetGitHubPullReq
 		&i.Additions,
 		&i.Deletions,
 		&i.ChangedFiles,
-		&i.Provider,
-		&i.ConnectionID,
-	)
-	return i, err
-}
-
-const getGitLabConnectionByID = `-- name: GetGitLabConnectionByID :one
-SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at, provider, instance_url, display_name, access_token_ciphertext, webhook_secret_hash, webhook_secret_ciphertext, hooks FROM github_installation
-WHERE id = $1 AND workspace_id = $2 AND provider = 'gitlab'
-`
-
-type GetGitLabConnectionByIDParams struct {
-	ID          pgtype.UUID `json:"id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-func (q *Queries) GetGitLabConnectionByID(ctx context.Context, arg GetGitLabConnectionByIDParams) (GithubInstallation, error) {
-	row := q.db.QueryRow(ctx, getGitLabConnectionByID, arg.ID, arg.WorkspaceID)
-	var i GithubInstallation
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.InstallationID,
-		&i.AccountLogin,
-		&i.AccountType,
-		&i.AccountAvatarUrl,
-		&i.ConnectedByID,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.Provider,
-		&i.InstanceUrl,
-		&i.DisplayName,
-		&i.AccessTokenCiphertext,
-		&i.WebhookSecretHash,
-		&i.WebhookSecretCiphertext,
-		&i.Hooks,
-	)
-	return i, err
-}
-
-const getGitLabConnectionBySecretHash = `-- name: GetGitLabConnectionBySecretHash :one
-SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at, provider, instance_url, display_name, access_token_ciphertext, webhook_secret_hash, webhook_secret_ciphertext, hooks FROM github_installation
-WHERE webhook_secret_hash = $1 AND provider = 'gitlab'
-`
-
-func (q *Queries) GetGitLabConnectionBySecretHash(ctx context.Context, webhookSecretHash []byte) (GithubInstallation, error) {
-	row := q.db.QueryRow(ctx, getGitLabConnectionBySecretHash, webhookSecretHash)
-	var i GithubInstallation
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.InstallationID,
-		&i.AccountLogin,
-		&i.AccountType,
-		&i.AccountAvatarUrl,
-		&i.ConnectedByID,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.Provider,
-		&i.InstanceUrl,
-		&i.DisplayName,
-		&i.AccessTokenCiphertext,
-		&i.WebhookSecretHash,
-		&i.WebhookSecretCiphertext,
-		&i.Hooks,
-	)
-	return i, err
-}
-
-const getGitLabMergeRequest = `-- name: GetGitLabMergeRequest :one
-SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, provider, connection_id FROM github_pull_request
-WHERE workspace_id = $1 AND provider = 'gitlab' AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4
-`
-
-type GetGitLabMergeRequestParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	RepoOwner   string      `json:"repo_owner"`
-	RepoName    string      `json:"repo_name"`
-	PrNumber    int32       `json:"pr_number"`
-}
-
-func (q *Queries) GetGitLabMergeRequest(ctx context.Context, arg GetGitLabMergeRequestParams) (GithubPullRequest, error) {
-	row := q.db.QueryRow(ctx, getGitLabMergeRequest,
-		arg.WorkspaceID,
-		arg.RepoOwner,
-		arg.RepoName,
-		arg.PrNumber,
-	)
-	var i GithubPullRequest
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.InstallationID,
-		&i.RepoOwner,
-		&i.RepoName,
-		&i.PrNumber,
-		&i.Title,
-		&i.State,
-		&i.HtmlUrl,
-		&i.Branch,
-		&i.AuthorLogin,
-		&i.AuthorAvatarUrl,
-		&i.MergedAt,
-		&i.ClosedAt,
-		&i.PrCreatedAt,
-		&i.PrUpdatedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.HeadSha,
-		&i.MergeableState,
-		&i.Additions,
-		&i.Deletions,
-		&i.ChangedFiles,
-		&i.Provider,
-		&i.ConnectionID,
+		&i.ApiMergeable,
+		&i.ApiMergeStateStatus,
+		&i.ChecksRollupState,
+		&i.SnapshotHeadSha,
+		&i.SnapshotFetchedAt,
 	)
 	return i, err
 }
@@ -505,29 +226,19 @@ func (q *Queries) GetIssuePullRequestCloseAggregate(ctx context.Context, issueID
 	return i, err
 }
 
-const getIssuePullRequestLink = `-- name: GetIssuePullRequestLink :one
-SELECT pull_request_id FROM issue_pull_request
-WHERE issue_id = $1 AND pull_request_id = $2
-`
-
-type GetIssuePullRequestLinkParams struct {
-	IssueID       pgtype.UUID `json:"issue_id"`
-	PullRequestID pgtype.UUID `json:"pull_request_id"`
-}
-
-func (q *Queries) GetIssuePullRequestLink(ctx context.Context, arg GetIssuePullRequestLinkParams) (pgtype.UUID, error) {
-	row := q.db.QueryRow(ctx, getIssuePullRequestLink, arg.IssueID, arg.PullRequestID)
-	var pull_request_id pgtype.UUID
-	err := row.Scan(&pull_request_id)
-	return pull_request_id, err
-}
-
 const getIssueReviewHeadSha = `-- name: GetIssueReviewHeadSha :one
-SELECT pr.head_sha
-FROM github_pull_request pr
-JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
-WHERE ipr.issue_id = $1 AND pr.head_sha <> ''
-ORDER BY (pr.state IN ('open', 'draft')) DESC, pr.pr_updated_at DESC
+SELECT head_sha FROM (
+    SELECT pr.head_sha AS head_sha, pr.state AS state, pr.pr_updated_at AS pr_updated_at
+    FROM github_pull_request pr
+    JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
+    WHERE ipr.issue_id = $1 AND pr.head_sha <> '' AND NOT ipr.reference_only
+    UNION ALL
+    SELECT pr.head_sha AS head_sha, pr.state AS state, pr.pr_updated_at AS pr_updated_at
+    FROM vcs_pull_request pr
+    JOIN issue_vcs_pull_request ipr ON ipr.pull_request_id = pr.id
+    WHERE ipr.issue_id = $1 AND pr.head_sha <> '' AND NOT ipr.reference_only
+) combined
+ORDER BY (state IN ('open', 'draft')) DESC, pr_updated_at DESC
 LIMIT 1
 `
 
@@ -540,72 +251,19 @@ LIMIT 1
 // newest linked PR with a head_sha when none are open. Returns no rows (empty
 // string) when the issue has no linked PR — callers treat that as "no SHA key"
 // and dedup on (issue_id, agent_id) alone, preserving pre-TEN-356 behavior.
+//
+// Spans both GitHub and self-hosted VCS PRs: a self-hosted PR pushing a new
+// commit must move the dedup head SHA the same way a GitHub PR does, otherwise
+// a fresh review round could be merged away against a stale key.
+// reference_only links are excluded on both arms, matching the PR-list and
+// close-aggregate queries: a body-only mention is hidden from the list and the
+// close gate, so it must not win this ORDER BY and become the review dedup head
+// SHA either, masking the real working PR's SHA.
 func (q *Queries) GetIssueReviewHeadSha(ctx context.Context, issueID pgtype.UUID) (string, error) {
 	row := q.db.QueryRow(ctx, getIssueReviewHeadSha, issueID)
 	var head_sha string
 	err := row.Scan(&head_sha)
 	return head_sha, err
-}
-
-const getLatestOpenGitLabMRByHeadSha = `-- name: GetLatestOpenGitLabMRByHeadSha :one
-
-SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, provider, connection_id FROM github_pull_request
-WHERE workspace_id = $1
-  AND provider = 'gitlab'
-  AND repo_owner = $2
-  AND repo_name = $3
-  AND head_sha = $4
-  AND state = 'open'
-ORDER BY updated_at DESC
-LIMIT 1
-`
-
-type GetLatestOpenGitLabMRByHeadShaParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	RepoOwner   string      `json:"repo_owner"`
-	RepoName    string      `json:"repo_name"`
-	HeadSha     string      `json:"head_sha"`
-}
-
-// =====================
-// GitLab lookup / drain / cleanup
-// =====================
-func (q *Queries) GetLatestOpenGitLabMRByHeadSha(ctx context.Context, arg GetLatestOpenGitLabMRByHeadShaParams) (GithubPullRequest, error) {
-	row := q.db.QueryRow(ctx, getLatestOpenGitLabMRByHeadSha,
-		arg.WorkspaceID,
-		arg.RepoOwner,
-		arg.RepoName,
-		arg.HeadSha,
-	)
-	var i GithubPullRequest
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.InstallationID,
-		&i.RepoOwner,
-		&i.RepoName,
-		&i.PrNumber,
-		&i.Title,
-		&i.State,
-		&i.HtmlUrl,
-		&i.Branch,
-		&i.AuthorLogin,
-		&i.AuthorAvatarUrl,
-		&i.MergedAt,
-		&i.ClosedAt,
-		&i.PrCreatedAt,
-		&i.PrUpdatedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.HeadSha,
-		&i.MergeableState,
-		&i.Additions,
-		&i.Deletions,
-		&i.ChangedFiles,
-		&i.Provider,
-		&i.ConnectionID,
-	)
-	return i, err
 }
 
 const getPendingGitHubInstallation = `-- name: GetPendingGitHubInstallation :one
@@ -622,108 +280,6 @@ func (q *Queries) GetPendingGitHubInstallation(ctx context.Context, installation
 		&i.AccountAvatarUrl,
 		&i.ReceivedAt,
 		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const getPullRequestByID = `-- name: GetPullRequestByID :one
-SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, provider, connection_id FROM github_pull_request
-WHERE id = $1 AND workspace_id = $2
-`
-
-type GetPullRequestByIDParams struct {
-	ID          pgtype.UUID `json:"id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-func (q *Queries) GetPullRequestByID(ctx context.Context, arg GetPullRequestByIDParams) (GithubPullRequest, error) {
-	row := q.db.QueryRow(ctx, getPullRequestByID, arg.ID, arg.WorkspaceID)
-	var i GithubPullRequest
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.InstallationID,
-		&i.RepoOwner,
-		&i.RepoName,
-		&i.PrNumber,
-		&i.Title,
-		&i.State,
-		&i.HtmlUrl,
-		&i.Branch,
-		&i.AuthorLogin,
-		&i.AuthorAvatarUrl,
-		&i.MergedAt,
-		&i.ClosedAt,
-		&i.PrCreatedAt,
-		&i.PrUpdatedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.HeadSha,
-		&i.MergeableState,
-		&i.Additions,
-		&i.Deletions,
-		&i.ChangedFiles,
-		&i.Provider,
-		&i.ConnectionID,
-	)
-	return i, err
-}
-
-const insertGitLabConnection = `-- name: InsertGitLabConnection :one
-
-INSERT INTO github_installation (
-    workspace_id, provider, installation_id, account_login, account_type, display_name,
-    instance_url, access_token_ciphertext, webhook_secret_hash, webhook_secret_ciphertext, hooks
-) VALUES (
-    $1, 'gitlab', 0, $2, 'User', $3,
-    $4, $5, $6, $7, $8
-)
-RETURNING id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at, provider, instance_url, display_name, access_token_ciphertext, webhook_secret_hash, webhook_secret_ciphertext, hooks
-`
-
-type InsertGitLabConnectionParams struct {
-	WorkspaceID             pgtype.UUID `json:"workspace_id"`
-	AccountLogin            string      `json:"account_login"`
-	DisplayName             pgtype.Text `json:"display_name"`
-	InstanceUrl             pgtype.Text `json:"instance_url"`
-	AccessTokenCiphertext   []byte      `json:"access_token_ciphertext"`
-	WebhookSecretHash       []byte      `json:"webhook_secret_hash"`
-	WebhookSecretCiphertext []byte      `json:"webhook_secret_ciphertext"`
-	Hooks                   []byte      `json:"hooks"`
-}
-
-// =====================
-// GitLab Connection
-// =====================
-func (q *Queries) InsertGitLabConnection(ctx context.Context, arg InsertGitLabConnectionParams) (GithubInstallation, error) {
-	row := q.db.QueryRow(ctx, insertGitLabConnection,
-		arg.WorkspaceID,
-		arg.AccountLogin,
-		arg.DisplayName,
-		arg.InstanceUrl,
-		arg.AccessTokenCiphertext,
-		arg.WebhookSecretHash,
-		arg.WebhookSecretCiphertext,
-		arg.Hooks,
-	)
-	var i GithubInstallation
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.InstallationID,
-		&i.AccountLogin,
-		&i.AccountType,
-		&i.AccountAvatarUrl,
-		&i.ConnectedByID,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.Provider,
-		&i.InstanceUrl,
-		&i.DisplayName,
-		&i.AccessTokenCiphertext,
-		&i.WebhookSecretHash,
-		&i.WebhookSecretCiphertext,
-		&i.Hooks,
 	)
 	return i, err
 }
@@ -783,8 +339,8 @@ func (q *Queries) LinkIssueToPullRequest(ctx context.Context, arg LinkIssueToPul
 }
 
 const listGitHubInstallationsByInstallationID = `-- name: ListGitHubInstallationsByInstallationID :many
-SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at, provider, instance_url, display_name, access_token_ciphertext, webhook_secret_hash, webhook_secret_ciphertext, hooks FROM github_installation
-WHERE installation_id = $1 AND provider = 'github'
+SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at FROM github_installation
+WHERE installation_id = $1
 ORDER BY created_at ASC, id ASC
 `
 
@@ -810,13 +366,6 @@ func (q *Queries) ListGitHubInstallationsByInstallationID(ctx context.Context, i
 			&i.ConnectedByID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
-			&i.Provider,
-			&i.InstanceUrl,
-			&i.DisplayName,
-			&i.AccessTokenCiphertext,
-			&i.WebhookSecretHash,
-			&i.WebhookSecretCiphertext,
-			&i.Hooks,
 		); err != nil {
 			return nil, err
 		}
@@ -830,8 +379,8 @@ func (q *Queries) ListGitHubInstallationsByInstallationID(ctx context.Context, i
 
 const listGitHubInstallationsByWorkspace = `-- name: ListGitHubInstallationsByWorkspace :many
 
-SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at, provider, instance_url, display_name, access_token_ciphertext, webhook_secret_hash, webhook_secret_ciphertext, hooks FROM github_installation
-WHERE workspace_id = $1 AND provider = 'github'
+SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at FROM github_installation
+WHERE workspace_id = $1
 ORDER BY created_at ASC
 `
 
@@ -857,56 +406,6 @@ func (q *Queries) ListGitHubInstallationsByWorkspace(ctx context.Context, worksp
 			&i.ConnectedByID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
-			&i.Provider,
-			&i.InstanceUrl,
-			&i.DisplayName,
-			&i.AccessTokenCiphertext,
-			&i.WebhookSecretHash,
-			&i.WebhookSecretCiphertext,
-			&i.Hooks,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listGitLabConnectionsByWorkspace = `-- name: ListGitLabConnectionsByWorkspace :many
-SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at, provider, instance_url, display_name, access_token_ciphertext, webhook_secret_hash, webhook_secret_ciphertext, hooks FROM github_installation
-WHERE workspace_id = $1 AND provider = 'gitlab'
-ORDER BY created_at ASC
-`
-
-func (q *Queries) ListGitLabConnectionsByWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]GithubInstallation, error) {
-	rows, err := q.db.Query(ctx, listGitLabConnectionsByWorkspace, workspaceID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []GithubInstallation{}
-	for rows.Next() {
-		var i GithubInstallation
-		if err := rows.Scan(
-			&i.ID,
-			&i.WorkspaceID,
-			&i.InstallationID,
-			&i.AccountLogin,
-			&i.AccountType,
-			&i.AccountAvatarUrl,
-			&i.ConnectedByID,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.Provider,
-			&i.InstanceUrl,
-			&i.DisplayName,
-			&i.AccessTokenCiphertext,
-			&i.WebhookSecretHash,
-			&i.WebhookSecretCiphertext,
-			&i.Hooks,
 		); err != nil {
 			return nil, err
 		}
@@ -945,45 +444,47 @@ func (q *Queries) ListIssueIDsForPullRequest(ctx context.Context, pullRequestID 
 
 const listPullRequestsByIssue = `-- name: ListPullRequestsByIssue :many
 WITH issue_prs AS (
-    SELECT pr.id, pr.head_sha
+    SELECT pr.id, pr.snapshot_head_sha
     FROM github_pull_request pr
     JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
     WHERE ipr.issue_id = $1 AND NOT ipr.reference_only
 ),
-per_app_latest AS (
-    SELECT DISTINCT ON (cs.pr_id, cs.app_id)
-        cs.pr_id, cs.app_id, cs.conclusion, cs.status
-    FROM github_pull_request_check_suite cs
-    JOIN issue_prs ip ON ip.id = cs.pr_id
-    WHERE cs.head_sha = ip.head_sha AND ip.head_sha <> ''
-    ORDER BY cs.pr_id, cs.app_id, cs.updated_at DESC
-),
 checks AS (
     SELECT
-        pr_id,
+        cr.pr_id,
         COUNT(*)::bigint AS total,
-        SUM(CASE WHEN status = 'completed' AND conclusion IN
-                ('failure','cancelled','timed_out','action_required','startup_failure','stale')
+        SUM(CASE WHEN cr.status = 'completed' AND cr.conclusion IN
+                ('failure','cancelled','timed_out','action_required','startup_failure','stale','error')
             THEN 1 ELSE 0 END)::bigint AS failed,
-        SUM(CASE WHEN status = 'completed' AND conclusion IN
+        SUM(CASE WHEN cr.status = 'completed' AND cr.conclusion IN
                 ('success','neutral','skipped')
             THEN 1 ELSE 0 END)::bigint AS passed,
-        SUM(CASE WHEN status <> 'completed' OR conclusion IS NULL
-            THEN 1 ELSE 0 END)::bigint AS pending
-    FROM per_app_latest
-    GROUP BY pr_id
+        SUM(CASE WHEN cr.status <> 'completed' OR cr.conclusion IS NULL
+            THEN 1 ELSE 0 END)::bigint AS running,
+        COALESCE(
+            array_agg(cr.name) FILTER (WHERE cr.status = 'completed' AND cr.conclusion IN
+                ('failure','cancelled','timed_out','action_required','startup_failure','stale','error')),
+            '{}'
+        )::text[] AS failed_names
+    FROM github_pull_request_check_run cr
+    JOIN issue_prs ip ON ip.id = cr.pr_id
+    WHERE cr.head_sha = ip.snapshot_head_sha AND ip.snapshot_head_sha <> ''
+    GROUP BY cr.pr_id
 )
 SELECT
-    pr.id, pr.workspace_id, pr.installation_id, pr.provider, pr.repo_owner, pr.repo_name,
+    pr.id, pr.workspace_id, pr.installation_id, pr.repo_owner, pr.repo_name,
     pr.pr_number, pr.title, pr.state, pr.html_url, pr.branch, pr.author_login,
     pr.author_avatar_url, pr.merged_at, pr.closed_at, pr.pr_created_at,
     pr.pr_updated_at, pr.head_sha, pr.mergeable_state,
     pr.additions, pr.deletions, pr.changed_files,
+    pr.api_mergeable, pr.api_merge_state_status, pr.checks_rollup_state,
+    pr.snapshot_head_sha, pr.snapshot_fetched_at,
     pr.created_at, pr.updated_at,
     COALESCE(c.total, 0)::bigint   AS checks_total,
     COALESCE(c.passed, 0)::bigint  AS checks_passed,
     COALESCE(c.failed, 0)::bigint  AS checks_failed,
-    COALESCE(c.pending, 0)::bigint AS checks_pending
+    COALESCE(c.running, 0)::bigint AS checks_running,
+    COALESCE(c.failed_names, '{}')::text[] AS failed_check_names
 FROM github_pull_request pr
 JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
 LEFT JOIN checks c ON c.pr_id = pr.id
@@ -992,47 +493,51 @@ ORDER BY pr.pr_created_at DESC
 `
 
 type ListPullRequestsByIssueRow struct {
-	ID              pgtype.UUID        `json:"id"`
-	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
-	InstallationID  int64              `json:"installation_id"`
-	Provider        string             `json:"provider"`
-	RepoOwner       string             `json:"repo_owner"`
-	RepoName        string             `json:"repo_name"`
-	PrNumber        int32              `json:"pr_number"`
-	Title           string             `json:"title"`
-	State           string             `json:"state"`
-	HtmlUrl         string             `json:"html_url"`
-	Branch          pgtype.Text        `json:"branch"`
-	AuthorLogin     pgtype.Text        `json:"author_login"`
-	AuthorAvatarUrl pgtype.Text        `json:"author_avatar_url"`
-	MergedAt        pgtype.Timestamptz `json:"merged_at"`
-	ClosedAt        pgtype.Timestamptz `json:"closed_at"`
-	PrCreatedAt     pgtype.Timestamptz `json:"pr_created_at"`
-	PrUpdatedAt     pgtype.Timestamptz `json:"pr_updated_at"`
-	HeadSha         string             `json:"head_sha"`
-	MergeableState  pgtype.Text        `json:"mergeable_state"`
-	Additions       int32              `json:"additions"`
-	Deletions       int32              `json:"deletions"`
-	ChangedFiles    int32              `json:"changed_files"`
-	CreatedAt       pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
-	ChecksTotal     int64              `json:"checks_total"`
-	ChecksPassed    int64              `json:"checks_passed"`
-	ChecksFailed    int64              `json:"checks_failed"`
-	ChecksPending   int64              `json:"checks_pending"`
+	ID                  pgtype.UUID        `json:"id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	InstallationID      int64              `json:"installation_id"`
+	RepoOwner           string             `json:"repo_owner"`
+	RepoName            string             `json:"repo_name"`
+	PrNumber            int32              `json:"pr_number"`
+	Title               string             `json:"title"`
+	State               string             `json:"state"`
+	HtmlUrl             string             `json:"html_url"`
+	Branch              pgtype.Text        `json:"branch"`
+	AuthorLogin         pgtype.Text        `json:"author_login"`
+	AuthorAvatarUrl     pgtype.Text        `json:"author_avatar_url"`
+	MergedAt            pgtype.Timestamptz `json:"merged_at"`
+	ClosedAt            pgtype.Timestamptz `json:"closed_at"`
+	PrCreatedAt         pgtype.Timestamptz `json:"pr_created_at"`
+	PrUpdatedAt         pgtype.Timestamptz `json:"pr_updated_at"`
+	HeadSha             string             `json:"head_sha"`
+	MergeableState      pgtype.Text        `json:"mergeable_state"`
+	Additions           int32              `json:"additions"`
+	Deletions           int32              `json:"deletions"`
+	ChangedFiles        int32              `json:"changed_files"`
+	ApiMergeable        pgtype.Text        `json:"api_mergeable"`
+	ApiMergeStateStatus pgtype.Text        `json:"api_merge_state_status"`
+	ChecksRollupState   pgtype.Text        `json:"checks_rollup_state"`
+	SnapshotHeadSha     string             `json:"snapshot_head_sha"`
+	SnapshotFetchedAt   pgtype.Timestamptz `json:"snapshot_fetched_at"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
+	ChecksTotal         int64              `json:"checks_total"`
+	ChecksPassed        int64              `json:"checks_passed"`
+	ChecksFailed        int64              `json:"checks_failed"`
+	ChecksRunning       int64              `json:"checks_running"`
+	FailedCheckNames    []string           `json:"failed_check_names"`
 }
 
-// Returns the issue's linked PRs with the aggregated check-suite counts for
-// the PR's CURRENT head SHA. The `issue_prs` CTE narrows to this issue's PR
-// ids first so the per-app aggregation only touches suite rows for those
-// PRs — without that scoping the planner has to scan/aggregate every PR's
-// suites in the workspace before joining on issue. Per-app latest suite is
-// selected so a single app firing multiple suites on the same head doesn't
-// get counted N times. Late-arriving suites for an OLD head are stored but
-// excluded by the head_sha filter, so they can't override the new head's
-// pending view. reference_only links (a PR that merely mentions the issue
-// identifier in its body, with no closing keyword and no title/branch
-// reference) are filtered out — they are not working PRs for this issue.
+// Returns the issue's linked PRs with the GitHub API snapshot (MUL-5265): the
+// mergeability verdict, the CI rollup, and per-check counts for the PR's
+// CURRENT snapshot head SHA. Checks are aggregated from
+// github_pull_request_check_run — the run-level snapshot written by the API
+// refresh pipeline — NOT the legacy suite-level webhook aggregation, which is
+// removed. The `issue_prs` CTE narrows to this issue's PR ids first so the
+// aggregation only touches check rows for those PRs. Rows for an OLD head are
+// excluded by the snapshot_head_sha filter. reference_only links (a PR that
+// merely mentions the issue identifier in its body, with no closing keyword and
+// no title/branch reference) are filtered out — they are not working PRs.
 func (q *Queries) ListPullRequestsByIssue(ctx context.Context, issueID pgtype.UUID) ([]ListPullRequestsByIssueRow, error) {
 	rows, err := q.db.Query(ctx, listPullRequestsByIssue, issueID)
 	if err != nil {
@@ -1046,7 +551,6 @@ func (q *Queries) ListPullRequestsByIssue(ctx context.Context, issueID pgtype.UU
 			&i.ID,
 			&i.WorkspaceID,
 			&i.InstallationID,
-			&i.Provider,
 			&i.RepoOwner,
 			&i.RepoName,
 			&i.PrNumber,
@@ -1065,12 +569,18 @@ func (q *Queries) ListPullRequestsByIssue(ctx context.Context, issueID pgtype.UU
 			&i.Additions,
 			&i.Deletions,
 			&i.ChangedFiles,
+			&i.ApiMergeable,
+			&i.ApiMergeStateStatus,
+			&i.ChecksRollupState,
+			&i.SnapshotHeadSha,
+			&i.SnapshotFetchedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.ChecksTotal,
 			&i.ChecksPassed,
 			&i.ChecksFailed,
-			&i.ChecksPending,
+			&i.ChecksRunning,
+			&i.FailedCheckNames,
 		); err != nil {
 			return nil, err
 		}
@@ -1103,8 +613,8 @@ SET account_login = $2,
     account_type = $3,
     account_avatar_url = $4,
     updated_at = now()
-WHERE installation_id = $1 AND provider = 'github'
-RETURNING id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at, provider, instance_url, display_name, access_token_ciphertext, webhook_secret_hash, webhook_secret_ciphertext, hooks
+WHERE installation_id = $1
+RETURNING id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at
 `
 
 type UpdateGitHubInstallationAccountByInstallationIDParams struct {
@@ -1141,13 +651,6 @@ func (q *Queries) UpdateGitHubInstallationAccountByInstallationID(ctx context.Co
 			&i.ConnectedByID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
-			&i.Provider,
-			&i.InstanceUrl,
-			&i.DisplayName,
-			&i.AccessTokenCiphertext,
-			&i.WebhookSecretHash,
-			&i.WebhookSecretCiphertext,
-			&i.Hooks,
 		); err != nil {
 			return nil, err
 		}
@@ -1159,79 +662,22 @@ func (q *Queries) UpdateGitHubInstallationAccountByInstallationID(ctx context.Co
 	return items, nil
 }
 
-const updateGitLabConnectionHooks = `-- name: UpdateGitLabConnectionHooks :exec
-UPDATE github_installation
-SET hooks = $3, updated_at = now()
-WHERE id = $1 AND workspace_id = $2 AND provider = 'gitlab'
-`
-
-type UpdateGitLabConnectionHooksParams struct {
-	ID          pgtype.UUID `json:"id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	Hooks       []byte      `json:"hooks"`
-}
-
-func (q *Queries) UpdateGitLabConnectionHooks(ctx context.Context, arg UpdateGitLabConnectionHooksParams) error {
-	_, err := q.db.Exec(ctx, updateGitLabConnectionHooks, arg.ID, arg.WorkspaceID, arg.Hooks)
-	return err
-}
-
-const updateGitLabConnectionSecret = `-- name: UpdateGitLabConnectionSecret :exec
-UPDATE github_installation
-SET webhook_secret_hash = $3, webhook_secret_ciphertext = $4, updated_at = now()
-WHERE id = $1 AND workspace_id = $2 AND provider = 'gitlab'
-`
-
-type UpdateGitLabConnectionSecretParams struct {
-	ID                      pgtype.UUID `json:"id"`
-	WorkspaceID             pgtype.UUID `json:"workspace_id"`
-	WebhookSecretHash       []byte      `json:"webhook_secret_hash"`
-	WebhookSecretCiphertext []byte      `json:"webhook_secret_ciphertext"`
-}
-
-func (q *Queries) UpdateGitLabConnectionSecret(ctx context.Context, arg UpdateGitLabConnectionSecretParams) error {
-	_, err := q.db.Exec(ctx, updateGitLabConnectionSecret,
-		arg.ID,
-		arg.WorkspaceID,
-		arg.WebhookSecretHash,
-		arg.WebhookSecretCiphertext,
-	)
-	return err
-}
-
-const updateGitLabConnectionToken = `-- name: UpdateGitLabConnectionToken :exec
-UPDATE github_installation
-SET access_token_ciphertext = $3, updated_at = now()
-WHERE id = $1 AND workspace_id = $2 AND provider = 'gitlab'
-`
-
-type UpdateGitLabConnectionTokenParams struct {
-	ID                    pgtype.UUID `json:"id"`
-	WorkspaceID           pgtype.UUID `json:"workspace_id"`
-	AccessTokenCiphertext []byte      `json:"access_token_ciphertext"`
-}
-
-func (q *Queries) UpdateGitLabConnectionToken(ctx context.Context, arg UpdateGitLabConnectionTokenParams) error {
-	_, err := q.db.Exec(ctx, updateGitLabConnectionToken, arg.ID, arg.WorkspaceID, arg.AccessTokenCiphertext)
-	return err
-}
-
 const upsertGitHubPullRequest = `-- name: UpsertGitHubPullRequest :one
 
 INSERT INTO github_pull_request (
-    workspace_id, provider, installation_id, repo_owner, repo_name, pr_number,
+    workspace_id, installation_id, repo_owner, repo_name, pr_number,
     title, state, html_url, branch, author_login, author_avatar_url,
     merged_at, closed_at, pr_created_at, pr_updated_at,
     head_sha, mergeable_state,
     additions, deletions, changed_files
 ) VALUES (
-    $1, 'github', $2, $3, $4, $5,
+    $1, $2, $3, $4, $5,
     $6, $7, $8, $15, $16, $17,
     $18, $19, $9, $10,
     $11, $20,
     $12, $13, $14
 )
-ON CONFLICT (workspace_id, provider, repo_owner, repo_name, pr_number) DO UPDATE SET
+ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     installation_id = EXCLUDED.installation_id,
     title = EXCLUDED.title,
     state = EXCLUDED.state,
@@ -1252,7 +698,7 @@ ON CONFLICT (workspace_id, provider, repo_owner, repo_name, pr_number) DO UPDATE
     deletions     = EXCLUDED.deletions,
     changed_files = EXCLUDED.changed_files,
     updated_at = now()
-RETURNING id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, provider, connection_id
+RETURNING id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at
 `
 
 type UpsertGitHubPullRequestParams struct {
@@ -1341,250 +787,13 @@ func (q *Queries) UpsertGitHubPullRequest(ctx context.Context, arg UpsertGitHubP
 		&i.Additions,
 		&i.Deletions,
 		&i.ChangedFiles,
-		&i.Provider,
-		&i.ConnectionID,
+		&i.ApiMergeable,
+		&i.ApiMergeStateStatus,
+		&i.ChecksRollupState,
+		&i.SnapshotHeadSha,
+		&i.SnapshotFetchedAt,
 	)
 	return i, err
-}
-
-const upsertGitLabMergeRequest = `-- name: UpsertGitLabMergeRequest :one
-
-INSERT INTO github_pull_request (
-    workspace_id, provider, installation_id, repo_owner, repo_name, pr_number,
-    title, state, html_url, branch, author_login, author_avatar_url,
-    merged_at, closed_at, pr_created_at, pr_updated_at,
-    head_sha, mergeable_state,
-    additions, deletions, changed_files, connection_id
-) VALUES (
-    $1, 'gitlab', 0, $2, $3, $4,
-    $5, $6, $7, $14, $15, $16,
-    $17, $18, $8, $9,
-    $10, $19,
-    $11, $12, $13, $20
-)
-ON CONFLICT (workspace_id, provider, repo_owner, repo_name, pr_number) DO UPDATE SET
-    installation_id = EXCLUDED.installation_id,
-    title = EXCLUDED.title,
-    state = EXCLUDED.state,
-    html_url = EXCLUDED.html_url,
-    branch = EXCLUDED.branch,
-    author_login = EXCLUDED.author_login,
-    author_avatar_url = EXCLUDED.author_avatar_url,
-    merged_at = EXCLUDED.merged_at,
-    closed_at = EXCLUDED.closed_at,
-    pr_updated_at = EXCLUDED.pr_updated_at,
-    head_sha = EXCLUDED.head_sha,
-    mergeable_state = CASE
-        WHEN COALESCE($21::boolean, FALSE) THEN NULL
-        WHEN EXCLUDED.mergeable_state IS NOT NULL THEN EXCLUDED.mergeable_state
-        ELSE github_pull_request.mergeable_state
-    END,
-    additions     = EXCLUDED.additions,
-    deletions     = EXCLUDED.deletions,
-    changed_files = EXCLUDED.changed_files,
-    connection_id = EXCLUDED.connection_id,
-    updated_at = now()
-RETURNING id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, provider, connection_id
-`
-
-type UpsertGitLabMergeRequestParams struct {
-	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
-	RepoOwner           string             `json:"repo_owner"`
-	RepoName            string             `json:"repo_name"`
-	PrNumber            int32              `json:"pr_number"`
-	Title               string             `json:"title"`
-	State               string             `json:"state"`
-	HtmlUrl             string             `json:"html_url"`
-	PrCreatedAt         pgtype.Timestamptz `json:"pr_created_at"`
-	PrUpdatedAt         pgtype.Timestamptz `json:"pr_updated_at"`
-	HeadSha             string             `json:"head_sha"`
-	Additions           int32              `json:"additions"`
-	Deletions           int32              `json:"deletions"`
-	ChangedFiles        int32              `json:"changed_files"`
-	Branch              pgtype.Text        `json:"branch"`
-	AuthorLogin         pgtype.Text        `json:"author_login"`
-	AuthorAvatarUrl     pgtype.Text        `json:"author_avatar_url"`
-	MergedAt            pgtype.Timestamptz `json:"merged_at"`
-	ClosedAt            pgtype.Timestamptz `json:"closed_at"`
-	MergeableState      pgtype.Text        `json:"mergeable_state"`
-	ConnectionID        pgtype.UUID        `json:"connection_id"`
-	ClearMergeableState pgtype.Bool        `json:"clear_mergeable_state"`
-}
-
-// =====================
-// GitLab Merge Request (mirrors UpsertGitHubPullRequest)
-// =====================
-// Mirrors UpsertGitHubPullRequest with provider='gitlab' and installation_id=0.
-// The mergeable_state three-state CASE is identical to the GitHub upsert.
-func (q *Queries) UpsertGitLabMergeRequest(ctx context.Context, arg UpsertGitLabMergeRequestParams) (GithubPullRequest, error) {
-	row := q.db.QueryRow(ctx, upsertGitLabMergeRequest,
-		arg.WorkspaceID,
-		arg.RepoOwner,
-		arg.RepoName,
-		arg.PrNumber,
-		arg.Title,
-		arg.State,
-		arg.HtmlUrl,
-		arg.PrCreatedAt,
-		arg.PrUpdatedAt,
-		arg.HeadSha,
-		arg.Additions,
-		arg.Deletions,
-		arg.ChangedFiles,
-		arg.Branch,
-		arg.AuthorLogin,
-		arg.AuthorAvatarUrl,
-		arg.MergedAt,
-		arg.ClosedAt,
-		arg.MergeableState,
-		arg.ConnectionID,
-		arg.ClearMergeableState,
-	)
-	var i GithubPullRequest
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.InstallationID,
-		&i.RepoOwner,
-		&i.RepoName,
-		&i.PrNumber,
-		&i.Title,
-		&i.State,
-		&i.HtmlUrl,
-		&i.Branch,
-		&i.AuthorLogin,
-		&i.AuthorAvatarUrl,
-		&i.MergedAt,
-		&i.ClosedAt,
-		&i.PrCreatedAt,
-		&i.PrUpdatedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.HeadSha,
-		&i.MergeableState,
-		&i.Additions,
-		&i.Deletions,
-		&i.ChangedFiles,
-		&i.Provider,
-		&i.ConnectionID,
-	)
-	return i, err
-}
-
-const upsertGitLabPipeline = `-- name: UpsertGitLabPipeline :exec
-
-INSERT INTO github_pull_request_check_suite (
-    pr_id, suite_id, head_sha, app_id, conclusion, status, updated_at
-) VALUES (
-    $1, $2, $3, $4, $7, $5, $6
-)
-ON CONFLICT (pr_id, suite_id) DO UPDATE SET
-    head_sha   = EXCLUDED.head_sha,
-    app_id     = EXCLUDED.app_id,
-    conclusion = EXCLUDED.conclusion,
-    status     = EXCLUDED.status,
-    updated_at = EXCLUDED.updated_at
-WHERE EXCLUDED.updated_at > github_pull_request_check_suite.updated_at
-   OR (EXCLUDED.updated_at = github_pull_request_check_suite.updated_at AND
-       CASE EXCLUDED.status
-           WHEN 'completed' THEN 3
-           WHEN 'in_progress' THEN 2
-           ELSE 1
-       END >= CASE github_pull_request_check_suite.status
-           WHEN 'completed' THEN 3
-           WHEN 'in_progress' THEN 2
-           ELSE 1
-       END)
-`
-
-type UpsertGitLabPipelineParams struct {
-	PrID       pgtype.UUID        `json:"pr_id"`
-	SuiteID    int64              `json:"suite_id"`
-	HeadSha    string             `json:"head_sha"`
-	AppID      int64              `json:"app_id"`
-	Status     string             `json:"status"`
-	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
-	Conclusion pgtype.Text        `json:"conclusion"`
-}
-
-// =====================
-// GitLab Pipeline (writes github_pull_request_check_suite)
-// =====================
-// Same guard as UpsertPullRequestCheckSuite: prevents an older event from
-// overwriting a newer one. Status priority: completed > in_progress > anything
-// else.
-func (q *Queries) UpsertGitLabPipeline(ctx context.Context, arg UpsertGitLabPipelineParams) error {
-	_, err := q.db.Exec(ctx, upsertGitLabPipeline,
-		arg.PrID,
-		arg.SuiteID,
-		arg.HeadSha,
-		arg.AppID,
-		arg.Status,
-		arg.UpdatedAt,
-		arg.Conclusion,
-	)
-	return err
-}
-
-const upsertPendingCheckSuite = `-- name: UpsertPendingCheckSuite :exec
-
-INSERT INTO github_pending_check_suite (
-    workspace_id, provider, installation_id, repo_owner, repo_name, pr_number,
-    suite_id, head_sha, app_id, conclusion, status, suite_updated_at
-) VALUES (
-    $1, 'github', $2, $3, $4, $5,
-    $6, $7, $8, $11, $9, $10
-)
-ON CONFLICT (workspace_id, provider, repo_owner, repo_name, pr_number, suite_id) DO UPDATE SET
-    installation_id  = EXCLUDED.installation_id,
-    head_sha         = EXCLUDED.head_sha,
-    app_id           = EXCLUDED.app_id,
-    conclusion       = EXCLUDED.conclusion,
-    status           = EXCLUDED.status,
-    suite_updated_at = EXCLUDED.suite_updated_at,
-    received_at      = now()
-WHERE EXCLUDED.suite_updated_at >= github_pending_check_suite.suite_updated_at
-`
-
-type UpsertPendingCheckSuiteParams struct {
-	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
-	InstallationID int64              `json:"installation_id"`
-	RepoOwner      string             `json:"repo_owner"`
-	RepoName       string             `json:"repo_name"`
-	PrNumber       int32              `json:"pr_number"`
-	SuiteID        int64              `json:"suite_id"`
-	HeadSha        string             `json:"head_sha"`
-	AppID          int64              `json:"app_id"`
-	Status         string             `json:"status"`
-	SuiteUpdatedAt pgtype.Timestamptz `json:"suite_updated_at"`
-	Conclusion     pgtype.Text        `json:"conclusion"`
-}
-
-// =====================
-// GitHub pending check_suite (out-of-order arrival stash)
-// =====================
-// Stashes a check_suite event whose PR row is not yet mirrored. Replayed
-// (and deleted) by DrainPendingCheckSuitesForPR once the matching
-// `pull_request` webhook lands. ON CONFLICT keeps the newest payload
-// for the same (workspace, repo, pr_number, suite_id) — repeated
-// deliveries while the PR is still missing are idempotent. The
-// suite_updated_at guard mirrors UpsertPullRequestCheckSuite so an older
-// event arriving after a newer one cannot overwrite the newer payload.
-func (q *Queries) UpsertPendingCheckSuite(ctx context.Context, arg UpsertPendingCheckSuiteParams) error {
-	_, err := q.db.Exec(ctx, upsertPendingCheckSuite,
-		arg.WorkspaceID,
-		arg.InstallationID,
-		arg.RepoOwner,
-		arg.RepoName,
-		arg.PrNumber,
-		arg.SuiteID,
-		arg.HeadSha,
-		arg.AppID,
-		arg.Status,
-		arg.SuiteUpdatedAt,
-		arg.Conclusion,
-	)
-	return err
 }
 
 const upsertPendingGitHubInstallation = `-- name: UpsertPendingGitHubInstallation :one
@@ -1625,106 +834,4 @@ func (q *Queries) UpsertPendingGitHubInstallation(ctx context.Context, arg Upser
 		&i.UpdatedAt,
 	)
 	return i, err
-}
-
-const upsertPendingGitLabPipeline = `-- name: UpsertPendingGitLabPipeline :exec
-
-INSERT INTO github_pending_check_suite (
-    workspace_id, provider, installation_id, repo_owner, repo_name, pr_number,
-    suite_id, head_sha, app_id, conclusion, status, suite_updated_at
-) VALUES (
-    $1, 'gitlab', 0, $2, $3, $4,
-    $5, $6, $7, $10, $8, $9
-)
-ON CONFLICT (workspace_id, provider, repo_owner, repo_name, pr_number, suite_id) DO UPDATE SET
-    installation_id  = EXCLUDED.installation_id,
-    head_sha         = EXCLUDED.head_sha,
-    app_id           = EXCLUDED.app_id,
-    conclusion       = EXCLUDED.conclusion,
-    status           = EXCLUDED.status,
-    suite_updated_at = EXCLUDED.suite_updated_at,
-    received_at      = now()
-WHERE EXCLUDED.suite_updated_at >= github_pending_check_suite.suite_updated_at
-`
-
-type UpsertPendingGitLabPipelineParams struct {
-	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
-	RepoOwner      string             `json:"repo_owner"`
-	RepoName       string             `json:"repo_name"`
-	PrNumber       int32              `json:"pr_number"`
-	SuiteID        int64              `json:"suite_id"`
-	HeadSha        string             `json:"head_sha"`
-	AppID          int64              `json:"app_id"`
-	Status         string             `json:"status"`
-	SuiteUpdatedAt pgtype.Timestamptz `json:"suite_updated_at"`
-	Conclusion     pgtype.Text        `json:"conclusion"`
-}
-
-// =====================
-// GitLab pending pipeline (out-of-order arrival stash)
-// =====================
-// Mirrors UpsertPendingCheckSuite with provider='gitlab'. Stashes pipeline
-// events whose MR row is not yet mirrored.
-func (q *Queries) UpsertPendingGitLabPipeline(ctx context.Context, arg UpsertPendingGitLabPipelineParams) error {
-	_, err := q.db.Exec(ctx, upsertPendingGitLabPipeline,
-		arg.WorkspaceID,
-		arg.RepoOwner,
-		arg.RepoName,
-		arg.PrNumber,
-		arg.SuiteID,
-		arg.HeadSha,
-		arg.AppID,
-		arg.Status,
-		arg.SuiteUpdatedAt,
-		arg.Conclusion,
-	)
-	return err
-}
-
-const upsertPullRequestCheckSuite = `-- name: UpsertPullRequestCheckSuite :exec
-
-INSERT INTO github_pull_request_check_suite (
-    pr_id, suite_id, head_sha, app_id, conclusion, status, updated_at
-) VALUES (
-    $1, $2, $3, $4, $7, $5, $6
-)
-ON CONFLICT (pr_id, suite_id) DO UPDATE SET
-    head_sha   = EXCLUDED.head_sha,
-    app_id     = EXCLUDED.app_id,
-    conclusion = EXCLUDED.conclusion,
-    status     = EXCLUDED.status,
-    updated_at = EXCLUDED.updated_at
-WHERE EXCLUDED.updated_at >= github_pull_request_check_suite.updated_at
-`
-
-type UpsertPullRequestCheckSuiteParams struct {
-	PrID       pgtype.UUID        `json:"pr_id"`
-	SuiteID    int64              `json:"suite_id"`
-	HeadSha    string             `json:"head_sha"`
-	AppID      int64              `json:"app_id"`
-	Status     string             `json:"status"`
-	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
-	Conclusion pgtype.Text        `json:"conclusion"`
-}
-
-// =====================
-// GitHub PR check suite
-// =====================
-// Upserts a single check_suite row keyed by (pr_id, suite_id). The WHERE
-// clause on the DO UPDATE branch prevents a late-arriving older event from
-// overwriting a newer one — same-PR/same-suite ordering protection. Late
-// events targeting an old head still land here (their head_sha is stored
-// on the row); the head_sha filter in ListPullRequestsByIssue keeps them
-// out of the current aggregate.
-func (q *Queries) UpsertPullRequestCheckSuite(ctx context.Context, arg UpsertPullRequestCheckSuiteParams) error {
-	_, err := q.db.Exec(ctx, upsertPullRequestCheckSuite,
-		arg.PrID,
-		arg.SuiteID,
-		arg.HeadSha,
-		arg.AppID,
-		arg.Status,
-		arg.UpdatedAt,
-		arg.Conclusion,
-	)
-	return err
 }

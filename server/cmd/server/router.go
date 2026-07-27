@@ -204,6 +204,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		AllowedEmails:            splitAndTrim(os.Getenv("ALLOWED_EMAILS")),
 		AllowedEmailDomains:      splitAndTrim(os.Getenv("ALLOWED_EMAIL_DOMAINS")),
 		DisableWorkspaceCreation: os.Getenv("DISABLE_WORKSPACE_CREATION") == "true",
+		VCSIntegrationEnabled:    os.Getenv("MULTICA_VCS_INTEGRATION_ENABLED") == "true",
 		PublicURL:                strings.TrimRight(strings.TrimSpace(os.Getenv("MULTICA_PUBLIC_URL")), "/"),
 		TrustedProxies:           parseTrustedProxies(os.Getenv("MULTICA_TRUSTED_PROXIES")),
 		CloudRuntimeFleetURL:     cloudRuntimeFleetURLFromEnv(),
@@ -551,28 +552,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		slog.Info("slack integration disabled (MULTICA_SLACK_SECRET_KEY not set)")
 	}
 
-	// GitLab integration. Gated by MULTICA_GITLAB_SECRET_KEY, the at-rest
-	// encryption master key for personal access tokens and webhook secrets.
-	// The key must be a base64-encoded 32-byte value (generate:
-	// `openssl rand -base64 32`). When the key is absent or malformed the
-	// GitLab connection handlers return 503; the rest of the server starts
-	// unaffected so self-host deployments that have not opted in to GitLab
-	// continue normally. Webhook verification does NOT depend on the
-	// secretbox key — it uses only the cleartext secret hash, so a key-absent
-	// deployment that somehow has connection rows (e.g. migrated data) still
-	// processes inbound webhooks correctly.
-	if gitlabKey, err := secretbox.LoadKey("MULTICA_GITLAB_SECRET_KEY"); err == nil {
-		box, err := secretbox.New(gitlabKey)
-		if err != nil {
-			slog.Error("gitlab: secretbox.New failed; gitlab integration disabled", "error", err)
-		} else {
-			h.GitLabBox = box
-			slog.Info("gitlab integration enabled")
-		}
-	} else {
-		slog.Info("gitlab integration disabled", "reason", err)
-	}
-
 	// Composio integration (MUL-3720). Gated by COMPOSIO_API_KEY plus the
 	// composio_mcp_apps feature flag. The env var is the project-scoped key the
 	// standalone SDK authenticates Composio with (sent as x-api-key; the project
@@ -628,6 +607,22 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		}
 	} else {
 		slog.Info("composio integration disabled (COMPOSIO_API_KEY not set)")
+	}
+
+	// VCS at-rest encryption: the box encrypts per-workspace access tokens and
+	// webhook secrets for token-based providers (Forgejo / Gitea / GitLab).
+	// Without it, connect/webhook handlers return 503 (so a misconfigured
+	// self-host never stores plaintext secrets).
+	if vcsKey, err := secretbox.LoadKey("MULTICA_VCS_SECRET_KEY"); err == nil {
+		box, err := secretbox.New(vcsKey)
+		if err != nil {
+			slog.Error("vcs: secretbox.New failed; vcs integration disabled", "error", err)
+		} else {
+			h.VCSSecretBox = box
+			slog.Info("vcs integration enabled")
+		}
+	} else {
+		slog.Info("vcs integration disabled (MULTICA_VCS_SECRET_KEY not set)")
 	}
 
 	if opts.HeartbeatScheduler != nil {
@@ -761,12 +756,16 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// GitHub App webhook (no Multica auth — requests are authenticated via
 	// HMAC-SHA256 signature in the handler) and post-install setup callback.
 	r.Post("/api/webhooks/github", h.HandleGitHubWebhook)
-	r.Post("/api/webhooks/gitlab", h.HandleGitLabWebhook)
 	r.Get("/api/github/setup", h.GitHubSetupCallback)
 	// Slack OAuth callback (no Multica auth in the path — it is hit by Slack's
 	// browser redirect; the workspace/agent/initiator are recovered from the
 	// sealed state). It exchanges the code, upserts the install, then bounces
 	// the browser back to Settings → Integrations.
+	// VCS webhook for token-based providers (Forgejo / Gitea / GitLab). No Multica
+	// auth — authenticated per-connection by the provider's signature scheme;
+	// the connection id in the path selects the workspace, provider, and
+	// decryption secret.
+	r.Post("/api/webhooks/vcs/{connectionId}", h.HandleVCSWebhook)
 	// Stripe webhook (no Multica auth — Stripe signs the raw body
 	// with a shared secret, the multica-cloud upstream verifies. We
 	// only forward the bytes + the Stripe-Signature header; see
@@ -892,6 +891,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// the handler strips the management handle and adds a
 					// can_manage hint so the UI can gate connect/disconnect.
 					r.Get("/github/installations", h.ListGitHubInstallations)
+					// VCS connections (Forgejo / Gitea / GitLab) — member-visible
+					// for the same reason as GitHub installations; connect /
+					// disconnect are admin-gated in the group below.
+					r.Get("/vcs/connections", h.ListVCSConnections)
 					// Custom runtime profiles — listing/reading is member-visible
 					// (the Runtime page renders for everyone; create/edit/delete
 					// are admin-gated below).
@@ -925,6 +928,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
 					r.Get("/github/connect", h.GitHubConnect)
 					r.Delete("/github/installations/{installationId}", h.DeleteGitHubInstallation)
+					// VCS connect / disconnect / webhook regeneration (admin-only).
+					r.Post("/vcs/connections", h.ConnectVCS)
+					r.Post("/vcs/connections/{connectionId}/rotate-webhook", h.RotateVCSConnectionWebhook)
+					r.Delete("/vcs/connections/{connectionId}", h.DeleteVCSConnection)
 				})
 
 				// Lark integration. Every endpoint here only requires
@@ -968,23 +975,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
 					r.Delete("/slack/installations/{installationId}", h.RevokeSlackInstallation)
 					r.Post("/slack/install/byo", h.RegisterSlackBYO)
-				})
-
-				// GitLab integration — listing is member-visible (same
-				// rationale as GitHub: the Integrations tab must render for
-				// non-admins); connect / delete remain admin-only.
-				r.Group(func(r chi.Router) {
-					r.Use(middleware.RequireWorkspaceMemberFromURL(queries, "id"))
-					r.Get("/gitlab/connections", h.ListGitLabConnections)
-				})
-				r.Group(func(r chi.Router) {
-					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
-					r.Post("/gitlab/connections", h.CreateGitLabConnection)
-					r.Delete("/gitlab/connections/{connectionID}", h.DeleteGitLabConnection)
-					r.Post("/gitlab/connections/{connectionID}/hooks", h.AddGitLabHookTarget)
-					r.Delete("/gitlab/connections/{connectionID}/hooks", h.RemoveGitLabHookTarget)
-					r.Put("/gitlab/connections/{connectionID}/token", h.UpdateGitLabConnectionToken)
-					r.Post("/gitlab/connections/{connectionID}/rotate-secret", h.RotateGitLabConnectionSecret)
 				})
 			})
 		})
@@ -1074,6 +1064,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 			// Issues
 			r.Route("/api/issues", func(r chi.Router) {
+				r.Post("/table/groups", h.ListIssueTableGroups)
+				r.Post("/table/rows", h.ListIssueTableRows)
+				r.Post("/table/facets", h.ListIssueTableFacets)
 				r.Get("/search", h.SearchIssues)
 				r.Get("/child-progress", h.ChildIssueProgress)
 				r.Get("/children", h.ListChildrenByParents)
@@ -1090,6 +1083,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetIssue)
 					r.Put("/", h.UpdateIssue)
+					r.Post("/move", h.MoveIssue)
 					r.Delete("/", h.DeleteIssue)
 					r.Post("/comments/trigger-preview", h.PreviewCommentTriggers)
 					r.Post("/comments", h.CreateComment)
@@ -1275,7 +1269,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/", h.ListAgentTemplates)
 				r.Get("/{slug}", h.GetAgentTemplate)
 			})
-			r.Post("/api/agent-builder/sessions", h.CreateAgentBuilderSession)
+			r.Route("/api/agent-builder/sessions", func(r chi.Router) {
+				r.Post("/", h.CreateAgentBuilderSession)
+				r.Patch("/{sessionId}/runtime", h.SwitchAgentBuilderRuntime)
+			})
 
 			// Skills
 			r.Route("/api/skills", func(r chi.Router) {
@@ -1356,6 +1353,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// Workspace-wide agent task snapshot for presence derivation:
 			// every active task + each agent's most recent terminal task.
 			r.Get("/api/agent-task-snapshot", h.ListWorkspaceAgentTaskSnapshot)
+
+			// Independent workspace-level list backing the issues-header
+			// "agents working" chip and its assignee-id Table filter.
+			r.Get("/api/working-agents", h.ListWorkspaceWorkingAgents)
 
 			// Workspace-wide daily agent activity (last 30d, anchored on
 			// completed_at). Backs the Agents-list sparkline (trailing 7d

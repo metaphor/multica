@@ -1,1 +1,0 @@
-DROP INDEX CONCURRENTLY IF EXISTS github_installation_gitlab_secret_hash;
