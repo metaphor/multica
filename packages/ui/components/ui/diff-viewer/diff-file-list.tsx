@@ -59,7 +59,7 @@ function DiffFileCard({ file }: { file: DiffFile }) {
     <Card data-slot="diff-file-card">
       <Collapsible defaultOpen>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-sm font-medium">
+          <CardTitle className="flex items-center gap-2 text-body font-medium">
             <Badge variant={statusVariants[file.status]}>
               {statusLabels[file.status]}
             </Badge>
@@ -117,7 +117,7 @@ function DiffFileNotice({
   return (
     <CardContent
       className={cn(
-        "border-surface-border px-4 py-6 text-center text-sm text-muted-foreground",
+        "border-surface-border px-4 py-6 text-center text-body text-muted-foreground",
         className
       )}
     >
@@ -130,7 +130,7 @@ function DiffLines({ patch }: { patch: string }) {
   const lines = parseUnifiedDiff(patch)
 
   return (
-    <div className="overflow-x-auto font-mono text-xs leading-5">
+    <div className="overflow-x-auto font-mono text-caption leading-5">
       {lines.map((line, index) => (
         <DiffLineRow key={index} line={line} />
       ))}

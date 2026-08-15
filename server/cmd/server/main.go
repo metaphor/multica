@@ -172,6 +172,10 @@ func envBool(name string, def bool) bool {
 	return v
 }
 
+func backgroundServices(h *handler.Handler) (*service.TaskService, *service.AutopilotService) {
+	return h.TaskService, h.AutopilotService
+}
+
 func main() {
 	logger.Init()
 
@@ -198,7 +202,7 @@ func main() {
 
 	// Feature flags: loaded once at startup from MULTICA_FEATURE_FLAGS_FILE
 	// (a YAML rule set) with FF_<KEY> env overrides layered on top.
-	// See docs/feature-flags.md for the schema and lifecycle rules.
+	// See server/pkg/featureflag for the schema and lifecycle rules.
 	//
 	// Booting the server without any flag config is intentional: when the
 	// env var is unset, every IsEnabled call falls through to the caller's
@@ -211,7 +215,7 @@ func main() {
 		slog.Error("feature flag configuration failed to load", "error", err)
 		os.Exit(1)
 	}
-	_ = flags // adopted by the router (opts.FeatureFlags) and server-side toggle points; see docs/feature-flags.md
+	_ = flags // adopted by the router (opts.FeatureFlags) and server-side toggle points; see server/pkg/featureflag
 
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
@@ -329,7 +333,7 @@ func main() {
 	// Order matters: subscriber listeners must register BEFORE notification listeners.
 	// The notification listener queries the subscriber table to determine recipients,
 	// so subscribers must be written first within the same synchronous event dispatch.
-	registerSubscriberListeners(bus, queries)
+	registerSubscriberListeners(bus, pool)
 	registerActivityListeners(bus, queries)
 	registerNotificationListeners(bus, queries)
 
@@ -338,6 +342,8 @@ func main() {
 	var httpMetrics *obsmetrics.HTTPMetrics
 	var businessMetrics *obsmetrics.BusinessMetrics
 	var samplerPool *pgxpool.Pool
+	var channelMediaMetrics *obsmetrics.ChannelMediaReconcilerMetrics
+	var wecomMetrics *obsmetrics.WecomMetrics
 	if metricsConfig.Enabled() {
 		// Build a dedicated tiny pool for the BusinessSamplerCollector
 		// so a stalled scrape can never starve business traffic. If the
@@ -365,6 +371,8 @@ func main() {
 		})
 		httpMetrics = metricsRegistry.HTTP
 		businessMetrics = metricsRegistry.Business
+		channelMediaMetrics = metricsRegistry.ChannelMedia
+		wecomMetrics = metricsRegistry.Wecom
 		// Forward inbound daemon WS frames into the per-kind counter so
 		// dashboards can split heartbeat / unknown / invalid traffic.
 		if daemonHub != nil {
@@ -391,6 +399,7 @@ func main() {
 	r, h := NewRouterWithOptions(pool, hub, bus, analyticsClient, storeRedis, RouterOptions{
 		HTTPMetrics:        httpMetrics,
 		BusinessMetrics:    businessMetrics,
+		WecomMetrics:       wecomMetrics,
 		DaemonHub:          daemonHub,
 		DaemonWakeup:       daemonWakeup,
 		FeatureFlags:       flags,
@@ -405,10 +414,12 @@ func main() {
 	// Start background workers.
 	sweepCtx, sweepCancel := context.WithCancel(context.Background())
 	autopilotCtx, autopilotCancel := context.WithCancel(context.Background())
-	taskSvc := service.NewTaskService(queries, pool, hub, bus, daemonWakeup)
-	taskSvc.Analytics = analyticsClient
-	taskSvc.Metrics = businessMetrics
-	autopilotSvc := service.NewAutopilotService(queries, pool, bus, taskSvc)
+	// Reuse the router's services here. In particular, the router wires the
+	// EmptyClaim cache into TaskService; constructing a second TaskService for
+	// scheduled Autopilot dispatch would send the daemon wakeup without bumping
+	// that cache's version, so an idle runtime could keep returning an empty
+	// claim until the cache TTL expires.
+	taskSvc, autopilotSvc := backgroundServices(h)
 	registerAutopilotListeners(bus, autopilotSvc)
 
 	// Construct a LivenessStore that mirrors the one wired into the HTTP
@@ -421,7 +432,7 @@ func main() {
 	}
 
 	// Start background sweeper to mark stale runtimes as offline.
-	go runRuntimeSweeper(sweepCtx, queries, liveness, taskSvc, bus)
+	go runRuntimeSweeper(sweepCtx, pool, queries, liveness, taskSvc, bus)
 	go heartbeatScheduler.Run(sweepCtx)
 	go runAutopilotFailureMonitor(autopilotCtx, queries, bus, envFailureMonitorConfig())
 	go runDBStatsLogger(sweepCtx, pool)
@@ -441,6 +452,14 @@ func main() {
 	// drained.
 	if h.ChannelSupervisor != nil {
 		go h.ChannelSupervisor.Run(sweepCtx)
+	}
+
+	// Media intent-ledger reconciler (PR #5580): settles uploaded-but-unbound
+	// channel media objects. An independent worker so object-storage latency
+	// spikes cannot starve any other sweeper's cadence.
+	if h.ChannelMediaReconciler != nil {
+		h.ChannelMediaReconciler.Metrics = channelMediaMetrics
+		go h.ChannelMediaReconciler.Run(sweepCtx)
 	}
 
 	// MUL-2957: DB-backed execution scheduler. The scheduler turns the
@@ -541,7 +560,11 @@ func main() {
 			)
 		}
 		if h.ChannelRouter != nil {
-			h.ChannelRouter.Drain()
+			drainCtx, drainCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if !h.ChannelRouter.Drain(drainCtx) {
+				slog.Warn("channel router: drain deadline reached; deferred media fallback remains durable")
+			}
+			drainCancel()
 		}
 	}
 

@@ -28,7 +28,8 @@ import {
 import { createBestEffortDevLog } from "./dev-log";
 import {
   writeFreezeBreadcrumb,
-  readAndClearFreezeBreadcrumb,
+  readFreezeBreadcrumb,
+  ackFreezeBreadcrumb,
   clearFreezeBreadcrumb,
 } from "./freeze-breadcrumb";
 import {
@@ -141,6 +142,7 @@ const rendererRouteContexts = new WeakMap<
   Electron.WebContents,
   RendererRouteContext
 >();
+
 let runtimeConfigResult: RuntimeConfigResult = {
   ok: false,
   error: { message: "Runtime config has not loaded yet" },
@@ -442,11 +444,11 @@ function createWindow(): BrowserWindow {
       dialog.showMessageBox(window, options),
     ),
     getDiagnosticContext: () => {
+      // No `windowUrl`: it is an absolute install path (`/Users/<name>/...`
+      // when installed per-user) and the bucketed route below already says
+      // which page the window was on, which is the part we can act on.
       const routeContext = rendererRouteContexts.get(window.webContents);
-      return {
-        windowUrl: window.webContents.getURL(),
-        ...(routeContext ? { desktopRoute: routeContext } : {}),
-      };
+      return routeContext ? { desktopRoute: routeContext } : {};
     },
     // Only persist in production: a true hang/crash can't report itself, so we
     // write a breadcrumb and the next renderer boot flushes it to PostHog. Dev
@@ -528,11 +530,11 @@ function createIssueWindow(context: IssueWindowContext): void {
       dialog.showMessageBox(window, options),
     ),
     getDiagnosticContext: () => {
+      // No `windowUrl`: it is an absolute install path (`/Users/<name>/...`
+      // when installed per-user) and the bucketed route below already says
+      // which page the window was on, which is the part we can act on.
       const routeContext = rendererRouteContexts.get(window.webContents);
-      return {
-        windowUrl: window.webContents.getURL(),
-        ...(routeContext ? { desktopRoute: routeContext } : {}),
-      };
+      return routeContext ? { desktopRoute: routeContext } : {};
     },
     persistBreadcrumb: is.dev
       ? undefined
@@ -714,7 +716,16 @@ if (!gotTheLock) {
     // reported when it happened — the renderer was hung or gone). Read-and-
     // clear so a failure reports exactly once.
     ipcMain.on("freeze:get-last", (event) => {
-      event.returnValue = readAndClearFreezeBreadcrumb(freezeBreadcrumbPath());
+      event.returnValue = readFreezeBreadcrumb(freezeBreadcrumbPath());
+    });
+
+    // The renderer got its breadcrumb event to posthog — retire that exact
+    // payload. A newer failure recorded since the read keeps its own ts and
+    // survives to be reported on the next boot.
+    ipcMain.on("freeze:ack", (event, ts: unknown) => {
+      if (!BrowserWindow.fromWebContents(event.sender)) return;
+      if (typeof ts !== "number" || !Number.isFinite(ts)) return;
+      ackFreezeBreadcrumb(freezeBreadcrumbPath(), ts);
     });
 
     // Sync IPC: preload exposes the validated runtime config before renderer

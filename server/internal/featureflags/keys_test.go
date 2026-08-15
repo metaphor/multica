@@ -3,12 +3,26 @@ package featureflags
 import (
 	"context"
 	"testing"
+
+	"github.com/multica-ai/multica/server/pkg/featureflag"
 )
 
-func TestResourceLabelsReleaseFlagDefaultsToOff(t *testing.T) {
-	ctx := context.Background()
-	if ResourceLabelsEnabled(ctx, nil) {
-		t.Fatal("resource labels release flag must default to off")
+func TestResourceLabelsCompatDecisionStaysEnabled(t *testing.T) {
+	flags := EvaluateFrontendPublicFlags(context.Background(), nil)
+	if !flags[resourceLabelsCompat] {
+		t.Fatal("resource labels must stay enabled for installed clients")
+	}
+}
+
+// MUL-5345: hang stack capture is gone from this build, but v0.4.13–v0.4.18 are
+// installed and still hold a debugger channel open on every renderer whenever
+// this key arrives as `true`. Those clients are fail-closed on absence, so NOT
+// publishing the key is what disarms them — re-adding it would put a flag flip
+// back within reach of a fleet that can no longer produce a usable stack.
+func TestDesktopHangStackCaptureIsNotPublished(t *testing.T) {
+	flags := EvaluateFrontendPublicFlags(context.Background(), nil)
+	if _, published := flags["desktop_hang_stack_capture"]; published {
+		t.Fatal("hang stack capture must stay unpublished so installed clients keep their debugger channels closed")
 	}
 }
 
@@ -23,5 +37,38 @@ func TestAgentSkillTogglesCompatDecisionStaysEnabled(t *testing.T) {
 	flags := EvaluateFrontendPublicFlags(context.Background(), nil)
 	if !flags[agentSkillTogglesCompat] {
 		t.Fatal("agent skill toggles must stay enabled for installed v0.4.0 clients")
+	}
+}
+
+func TestPluginsV1DefaultsOff(t *testing.T) {
+	flags := EvaluateFrontendPublicFlags(context.Background(), nil)
+	if flags[PluginsV1] {
+		t.Fatal("plugins_v1 must stay disabled unless explicitly enabled")
+	}
+}
+
+func TestPrivatePluginsV1DefaultsOff(t *testing.T) {
+	flags := EvaluateFrontendPublicFlags(context.Background(), nil)
+	if flags[PrivatePluginsV1] {
+		t.Fatal("private_plugins_v1 must stay disabled unless explicitly enabled")
+	}
+}
+
+func TestPrivatePluginsV1RequiresBothFlags(t *testing.T) {
+	provider := featureflag.NewStaticProvider()
+	flags := featureflag.NewService(provider)
+	ctx := context.Background()
+
+	provider.Set(PrivatePluginsV1, featureflag.Rule{Default: true})
+	if PrivatePluginsV1Enabled(ctx, flags) {
+		t.Fatal("private_plugins_v1 must stay off while plugins_v1 is off")
+	}
+	provider.Set(PluginsV1, featureflag.Rule{Default: true})
+	if !PrivatePluginsV1Enabled(ctx, flags) {
+		t.Fatal("private_plugins_v1 must be on when both flags are on")
+	}
+	provider.Set(PrivatePluginsV1, featureflag.Rule{Default: false})
+	if PrivatePluginsV1Enabled(ctx, flags) {
+		t.Fatal("private_plugins_v1 must stay off when its own flag is off")
 	}
 }

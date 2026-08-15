@@ -1,6 +1,6 @@
 ---
 name: multica-working-on-issues
-description: "Use when working on a Multica issue after the runtime has provided the trigger context — to apply the product contracts the runtime brief does not encode: how PR linking differs from close intent, how to read a linked PR's real state via the pull-requests CLI, which metadata keys are high-signal, what status changes trigger on the server, and how sub-issue create status (todo vs backlog) controls whether assigned agents start immediately."
+description: "Use when acting on a Multica issue beyond what the brief covers: PR linking vs close intent, reading a linked PR's real state, metadata keys, status-change side effects, sub-issue todo vs backlog."
 user-invocable: false
 allowed-tools: Bash(multica *), Bash(git *), Bash(gh *)
 ---
@@ -127,28 +127,21 @@ not observe a routable issue key in the PR title/body/branch — or the only mat
 was a bare body mention, which links as `reference_only` and is hidden from this
 list (see the reference-only rule above).
 
-## Metadata: high-signal keys only
+## Metadata: durable custom state
 
-Metadata is durable issue state. Reading metadata is safe. Writing a metadata key
-is a state mutation and should be tied to an explicit task requirement to record
-that state for later readers or runs.
+Metadata is a free-form KV bag of durable issue state. Reading metadata is safe.
+Writing a metadata key is a state mutation and should be tied to an explicit
+task requirement to record that state for later readers or runs. Keys are
+whatever your workflow needs — the platform curates no vocabulary; pick short
+snake_case names and reuse them consistently within your workspace.
 
-High-signal keys (reuse these names so queries stay consistent):
-
-- `pr_url`
-- `pr_number`
-- `pipeline_status`
-- `deploy_url`
-- `external_issue_url`
-- `waiting_on`
-- `blocked_reason`
-- `decision`
-
-Not metadata: logs, summaries, files touched, timestamps, attempt counts,
-investigation notes. Those belong in the result comment.
+Never store secrets, tokens, or API keys in metadata.
+Not metadata: logs or summaries; runtime bookkeeping such as timestamps,
+attempt counts, or agent IDs; or other single-run details such as
+files touched and investigation notes — those belong in the result comment.
 
 ```bash
-multica issue metadata set <issue-id> --key pr_url --value <url>
+multica issue metadata set <issue-id> --key <key> --value <value>
 multica issue metadata delete <issue-id> --key <stale-key>
 ```
 
@@ -179,7 +172,7 @@ multica issue property unset <issue-id> --name Environment
   If a needed property does not exist, propose it in a comment instead.
 - Property vs metadata: if the value is workflow state a human should see and
   filter by, and a definition exists, prefer the property. Metadata stays the
-  free-form scratchpad for run state (`pr_url`, `waiting_on`, ...).
+  free-form bag for durable custom issue state.
 
 ## Status changes have server side effects
 
@@ -208,6 +201,26 @@ on it. These are the contracts, not advice:
 - **Failed issue-triggered tasks** may roll an issue from `in_progress` back to
   `todo` when no active task / retry remains — that is the main server-owned
   status write on the agent-run path.
+
+## Claim ownership without duplicating a run
+
+Assigning an active issue to an agent normally starts a run. When the work is
+already underway and the write only records ownership or progress, pass
+`--no-start` on every command in that flow — suppressing the assignment alone
+does not suppress a later status update:
+
+```bash
+multica issue assign <issue-id> --to-id <agent-id> --no-start
+multica issue update <issue-id> --assignee-id <agent-id> --no-start
+multica issue status <issue-id> in_progress --no-start
+```
+
+Before self-assigning, check the target issue's comment history for an existing
+claim and any `## Active sibling runs` block (its `run-messages` commands show
+work in flight). The server also suppresses a trusted self-assignment when the
+exact target `(issue, agent)` pair already has a non-terminal task, but it
+deliberately keeps same-agent handoffs to a fresh issue starting runs: cross-issue
+serial chains and triage batches rely on that.
 
 ## Sub-issues: `todo` starts work now, `backlog` parks it
 

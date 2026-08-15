@@ -47,7 +47,7 @@ func TestDetectBuiltinRuntimes_ProbesRunConcurrently(t *testing.T) {
 	}
 
 	start := time.Now()
-	runtimes := d.detectBuiltinRuntimes(context.Background())
+	runtimes, _, _ := d.detectBuiltinRuntimes(context.Background())
 	elapsed := time.Since(start)
 
 	if len(runtimes) != len(d.cfg.Agents) {
@@ -73,6 +73,9 @@ func TestDetectBuiltinRuntimes_ProbesRunConcurrently(t *testing.T) {
 // version detection or the min-version gate is dropped from the payload while
 // the healthy ones still register — matching the old serial loop's semantics.
 func TestDetectBuiltinRuntimes_SkipsFailedProbes(t *testing.T) {
+	// /broken fails fast, so it earns its bounded retry before being dropped;
+	// shrink the retry delay so this test doesn't wait out the real one.
+	stubProbeRetry(t, time.Millisecond, time.Second)
 	origDetect := detectAgentVersion
 	origCheck := checkAgentMinVersion
 	t.Cleanup(func() {
@@ -101,7 +104,7 @@ func TestDetectBuiltinRuntimes_SkipsFailedProbes(t *testing.T) {
 		"tooold": {Path: "/usr/bin/true"},
 	}
 
-	runtimes := d.detectBuiltinRuntimes(context.Background())
+	runtimes, _, _ := d.detectBuiltinRuntimes(context.Background())
 	got := map[string]bool{}
 	for _, rt := range runtimes {
 		got[rt["type"]] = true

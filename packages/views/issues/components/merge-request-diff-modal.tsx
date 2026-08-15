@@ -59,7 +59,7 @@ export function MergeRequestDiffModal({
             <DiffLoadingSkeleton />
           ) : errorMessage ? (
             <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
-              <p className="text-sm text-muted-foreground">{errorMessage}</p>
+              <p className="text-body text-muted-foreground">{errorMessage}</p>
               {(!error || !(error instanceof ApiError && (error.status === 400 || error.status === 409))) ? (
                 <Button variant="outline" size="sm" onClick={() => refetch()}>
                   {t(($) => $.merge_request_diff.retry)}
@@ -67,7 +67,7 @@ export function MergeRequestDiffModal({
               ) : null}
             </div>
           ) : diffData?.files.length === 0 ? (
-            <p className="py-12 text-center text-sm text-muted-foreground">
+            <p className="py-12 text-center text-body text-muted-foreground">
               {t(($) => $.merge_request_diff.empty)}
             </p>
           ) : (

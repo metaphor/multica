@@ -653,7 +653,7 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 		return fmt.Errorf("list autopilot subscribers: %w", err)
 	}
 	for _, sub := range templateSubs {
-		if err := qtx.AddIssueSubscriber(ctx, db.AddIssueSubscriberParams{
+		if _, err := qtx.AddIssueSubscriber(ctx, db.AddIssueSubscriberParams{
 			IssueID:  issue.ID,
 			UserType: sub.UserType,
 			UserID:   sub.UserID,
@@ -691,7 +691,7 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 		ActorType:   "agent",
 		ActorID:     util.UUIDToString(leader.ID),
 		Payload: map[string]any{
-			"issue": issueToMap(issue, prefix),
+			"issue": IssueToMap(issue, prefix),
 		},
 	})
 	s.captureIssueCreatedFromAutopilot(ap, run, issue, leader.ID)
@@ -868,12 +868,12 @@ func (s *AutopilotService) dispatchRunOnly(ctx context.Context, ap db.Autopilot,
 		}
 		return fmt.Errorf("resolve leader: %w", err)
 	}
-	ready, reason, err := AgentReadiness(ctx, s.Queries, agent)
+	verdict, err := AgentReadiness(ctx, s.Queries, agent)
 	if err != nil {
 		return fmt.Errorf("check agent readiness: %w", err)
 	}
-	if !ready {
-		return &errDispatchSkipped{reason: formatAdmissionReason(ap, reason), code: agentReadinessReasonCode(agent)}
+	if !verdict.Ready() {
+		return &errDispatchSkipped{reason: formatAdmissionReason(ap, verdict.Detail), code: verdict.Reason}
 	}
 
 	// Fail-closed invocation gate for squad autopilots (admission principal =
@@ -1221,7 +1221,7 @@ func (s *AutopilotService) shouldSkipDispatch(ctx context.Context, ap db.Autopil
 		// chance to succeed.
 		return "", "", false
 	}
-	ready, reason, err := AgentReadiness(ctx, s.Queries, agent)
+	verdict, err := AgentReadiness(ctx, s.Queries, agent)
 	if err != nil {
 		slog.Warn("autopilot admission: failed to load runtime",
 			"autopilot_id", util.UUIDToString(ap.ID),
@@ -1230,15 +1230,19 @@ func (s *AutopilotService) shouldSkipDispatch(ctx context.Context, ap db.Autopil
 		)
 		return "", "", false
 	}
-	if !ready {
-		if ap.ExecutionMode == "create_issue" && strings.HasPrefix(reason, "agent runtime is ") {
+	if !verdict.Ready() {
+		// A merely-offline machine still gets create_issue work: the issue is
+		// written server-side and the run waits for the laptop to come back. An
+		// unusable runtime does not qualify — nothing there can run until a
+		// human repairs it, so a doomed issue-create is not an improvement.
+		if ap.ExecutionMode == "create_issue" && verdict.Availability == AgentWaitable {
 			slog.Info("autopilot admission: allowing create_issue dispatch for offline runtime",
 				"autopilot_id", util.UUIDToString(ap.ID),
 				"runtime_id", util.UUIDToString(agent.RuntimeID),
-				"reason", reason,
+				"reason", verdict.Detail,
 			)
 		} else {
-			return formatAdmissionReason(ap, reason), agentReadinessReasonCode(agent), true
+			return formatAdmissionReason(ap, verdict.Detail), verdict.Reason, true
 		}
 	}
 	// Invocation gate at the autopilot layer (MUL-3963 / MUL-4525). The
@@ -1257,17 +1261,6 @@ func (s *AutopilotService) shouldSkipDispatch(ctx context.Context, ap db.Autopil
 		return "autopilot creator lacks access to private assignee agent", dispatch.ReasonInvocationNotAllowed, true
 	}
 	return "", "", false
-}
-
-// agentReadinessReasonCode types the reason an AgentReadiness check failed from
-// the agent's own state rather than the human-readable reason string (MUL-4525).
-// An archived agent cannot run at all; anything else (no runtime bound, or a
-// bound runtime that is not online) is a runtime-availability problem.
-func agentReadinessReasonCode(agent db.Agent) dispatch.ReasonCode {
-	if agent.ArchivedAt.Valid {
-		return dispatch.ReasonTargetUnavailable
-	}
-	return dispatch.ReasonRuntimeOffline
 }
 
 // formatAdmissionReason rewrites the generic AgentReadiness reason into the

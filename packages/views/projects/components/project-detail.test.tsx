@@ -1,6 +1,7 @@
 import type { Project, ProjectResource } from "@multica/core/types";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderWithI18n } from "../../test/i18n";
 import { ProjectDetail } from "./project-detail";
@@ -38,10 +39,21 @@ const updateProjectSpy = vi.hoisted(() =>
   }),
 );
 
+// Deletion flow: the component gates the delete action on the caller's role in
+// the member list, so the member mock exposes a controllable role. The delete
+// mutation must stay pending until the test resolves it, otherwise the real
+// useDeleteProject's onSuccess fires synchronously and the navigation/timing
+// assertions are meaningless.
+const memberRole = vi.hoisted(() => ({ value: "admin" as string }));
+const deleteProjectSpy = vi.hoisted(() => vi.fn());
+const navigationPush = vi.hoisted(() => vi.fn());
+const toastSuccess = vi.hoisted(() => vi.fn());
+
 vi.mock("@multica/core/api", () => ({
   api: {
     getProject: vi.fn().mockResolvedValue(projectFixture),
     updateProject: updateProjectSpy,
+    deleteProject: deleteProjectSpy,
     listProjectResources: vi.fn().mockImplementation(() => ({
       resources: projectResourcesFixture.resources,
       total: projectResourcesFixture.resources.length,
@@ -67,7 +79,10 @@ vi.mock("@multica/core/auth", () => ({
 vi.mock("@multica/core/workspace/queries", () => ({
   memberListOptions: () => ({
     queryKey: ["workspaces", "ws-1", "members"],
-    queryFn: () => Promise.resolve([]),
+    queryFn: () =>
+      Promise.resolve([
+        { user_id: "user-1", name: "User One", role: memberRole.value },
+      ]),
   }),
   agentListOptions: () => ({
     queryKey: ["workspaces", "ws-1", "agents"],
@@ -131,11 +146,11 @@ vi.mock("react-resizable-panels", () => ({
 }));
 
 vi.mock("sonner", () => ({
-  toast: { success: vi.fn(), error: vi.fn() },
+  toast: { success: toastSuccess, error: vi.fn() },
 }));
 
 vi.mock("../../navigation", () => ({
-  useNavigation: () => ({ push: vi.fn(), pathname: "/", getShareableUrl: (p: string) => p }),
+  useNavigation: () => ({ push: navigationPush, pathname: "/", getShareableUrl: (p: string) => p }),
   AppLink: ({ children, href }: any) => <a href={href}>{children}</a>,
   NavigationProvider: ({ children }: any) => children,
 }));
@@ -163,8 +178,12 @@ vi.mock("../../common/actor-avatar", () => ({
   ActorAvatar: () => null,
 }));
 
+vi.mock("../../issues/components/priority-icon", () => ({
+  PriorityIcon: () => null,
+}));
+
 vi.mock("../../layout/breadcrumb-header", () => ({
-  BreadcrumbHeader: ({ leaf }: any) => <div>{leaf}</div>,
+  BreadcrumbHeader: ({ actions }: any) => <header>{actions}</header>,
 }));
 
 vi.mock("../../layout/animated-right-sidebar", () => ({
@@ -196,6 +215,54 @@ vi.mock("../../issues/surface/issue-surface", () => ({
   IssueSurface: () => null,
 }));
 
+vi.mock("@multica/ui/components/ui/dropdown-menu", () => ({
+  DropdownMenu: ({ children }: any) => <>{children}</>,
+  DropdownMenuTrigger: ({ render }: any) => <>{render}</>,
+  DropdownMenuContent: ({ children }: any) => <div>{children}</div>,
+  DropdownMenuItem: ({ children, onClick }: any) => (
+    <button type="button" onClick={onClick}>
+      {children}
+    </button>
+  ),
+  DropdownMenuSeparator: () => <hr />,
+}));
+
+vi.mock("@multica/ui/components/ui/popover", () => ({
+  Popover: ({ children }: any) => <>{children}</>,
+  PopoverTrigger: ({ render }: any) => <>{render}</>,
+  PopoverContent: ({ children }: any) => <div>{children}</div>,
+}));
+
+vi.mock("@multica/ui/components/ui/tooltip", () => ({
+  Tooltip: ({ children }: any) => <>{children}</>,
+  TooltipTrigger: ({ render }: any) => <>{render}</>,
+  TooltipContent: ({ children }: any) => <div>{children}</div>,
+}));
+
+vi.mock("@multica/ui/components/ui/sheet", () => ({
+  Sheet: ({ children }: any) => <>{children}</>,
+  SheetContent: ({ children }: any) => <div>{children}</div>,
+}));
+
+vi.mock("@multica/ui/components/ui/alert-dialog", () => ({
+  AlertDialog: ({ open, children }: any) => (open ? <div role="alertdialog">{children}</div> : null),
+  AlertDialogContent: ({ children }: any) => <div>{children}</div>,
+  AlertDialogHeader: ({ children }: any) => <div>{children}</div>,
+  AlertDialogTitle: ({ children }: any) => <h2>{children}</h2>,
+  AlertDialogDescription: ({ children }: any) => <p>{children}</p>,
+  AlertDialogFooter: ({ children }: any) => <div>{children}</div>,
+  AlertDialogCancel: ({ children }: any) => <button type="button">{children}</button>,
+  AlertDialogAction: ({ children, onClick }: any) => (
+    <button type="button" onClick={onClick}>
+      {children}
+    </button>
+  ),
+}));
+
+vi.mock("@multica/ui/components/common/emoji-picker", () => ({
+  EmojiPicker: () => null,
+}));
+
 function createTestQueryClient() {
   return new QueryClient({
     defaultOptions: {
@@ -213,6 +280,11 @@ function renderProjectDetail(settings: Record<string, unknown> = {}) {
     resources: projectResourcesFixture.resources,
     total: projectResourcesFixture.resources.length,
   });
+  // Seed members so the admin gate resolves synchronously — the delete
+  // affordance depends on it and must not race the query.
+  queryClient.setQueryData(["workspaces", "ws-1", "members"], [
+    { user_id: "user-1", name: "User One", role: memberRole.value },
+  ]);
   return renderWithI18n(
     <QueryClientProvider client={queryClient}>
       <ProjectDetail projectId="p-1" />
@@ -220,14 +292,18 @@ function renderProjectDetail(settings: Record<string, unknown> = {}) {
   );
 }
 
-describe("ProjectDetail runtime section", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    projectFixture.settings = {};
-    projectResourcesFixture.resources = [];
-    updateProjectSpy.mockClear();
-  });
+beforeEach(() => {
+  vi.clearAllMocks();
+  projectFixture.settings = {};
+  projectResourcesFixture.resources = [];
+  updateProjectSpy.mockClear();
+  deleteProjectSpy.mockClear();
+  navigationPush.mockClear();
+  toastSuccess.mockClear();
+  memberRole.value = "admin";
+});
 
+describe("ProjectDetail runtime section", () => {
   it("renders the runtime section", async () => {
     renderProjectDetail();
     await waitFor(() => {
@@ -337,5 +413,45 @@ describe("ProjectDetail runtime section", () => {
       expect(screen.queryByText(/Must not match a project repository name/i)).not.toBeInTheDocument();
     });
     expect(updateProjectSpy).toHaveBeenCalled();
+  });
+});
+
+describe("ProjectDetail project deletion", () => {
+  it("requires confirmation and navigates only after deletion succeeds", async () => {
+    const user = userEvent.setup();
+    let resolveDelete: (() => void) | undefined;
+    deleteProjectSpy.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveDelete = resolve;
+        }),
+    );
+    renderProjectDetail();
+
+    await user.click(screen.getByRole("button", { name: "Delete project" }));
+
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+    expect(deleteProjectSpy).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+
+    expect(deleteProjectSpy).toHaveBeenCalledWith("p-1");
+    expect(navigationPush).not.toHaveBeenCalled();
+
+    resolveDelete?.();
+    await waitFor(() => {
+      expect(toastSuccess).toHaveBeenCalledWith("Project deleted");
+    });
+    expect(navigationPush).toHaveBeenCalledWith("/projects");
+  });
+
+  it("does not offer project deletion to regular members", () => {
+    memberRole.value = "member";
+
+    renderProjectDetail();
+
+    expect(
+      screen.queryByRole("button", { name: "Delete project" }),
+    ).not.toBeInTheDocument();
   });
 });

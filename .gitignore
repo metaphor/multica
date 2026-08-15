@@ -75,3 +75,7 @@ data/
 .idea
 .gstack/
 .omo/
+
+# Python (agent tooling)
+__pycache__/
+*.pyc
