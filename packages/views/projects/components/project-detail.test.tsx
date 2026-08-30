@@ -190,6 +190,7 @@ vi.mock("../../layout/animated-right-sidebar", () => ({
   AnimatedRightSidebar: ({ children }: any) => <div>{children}</div>,
   getAnimatedRightSidebarInitialOpen: () => true,
   rightSidebarPanelMotionProps: {},
+  useRightSidebarShortcut: vi.fn(),
   useAnimatedRightSidebarState: () => ({
     open: true,
     visualOpen: true,

@@ -9,6 +9,7 @@ export type ShortcutActionId =
   | "openSearch"
   | "createIssue"
   | "toggleSidebar"
+  | "toggleRightSidebar"
   | "toggleChat"
   | "findInIssue"
   | "openThreadNav"
@@ -80,6 +81,12 @@ export const SHORTCUT_ACTIONS: readonly ShortcutActionDefinition[] = [
   { id: "openSearch", category: "general", defaultShortcut: primary("K"), allowInEditable: true },
   { id: "createIssue", category: "general", defaultShortcut: createShortcutChord("C"), allowInEditable: false },
   { id: "toggleSidebar", category: "general", defaultShortcut: primary("B"), allowInEditable: false },
+  {
+    id: "toggleRightSidebar",
+    category: "general",
+    defaultShortcut: primary("/"),
+    allowInEditable: false,
+  },
   // Mod+J follows the "toggle a docked panel" convention, and is one of the few
   // letters this module's own policy leaves free on every platform and runtime:
   // it is neither app-owned (PRIMARY_RESERVED_KEYS) nor browser-owned
@@ -298,6 +305,10 @@ const PRIMARY_RESERVED_KEYS = new Set([
   // Window operations the app itself owns on every runtime: W closes the
   // tab, R/F5 is the reload guard, Q quits.
   "W", "R", "Q",
+  // Preferences: the desktop app opens Settings from the main process, and on
+  // web the browser opens its own settings — neither leaves the chord free for
+  // a product action.
+  ",",
   // Fundamental editing operations should never become product actions.
   "A", "C", "V", "X", "Y", "Z",
   // Zoom accelerators: fixed app shortcuts on desktop, browser zoom on web.

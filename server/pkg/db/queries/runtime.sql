@@ -3,6 +3,15 @@ SELECT * FROM agent_runtime
 WHERE workspace_id = $1
 ORDER BY created_at ASC;
 
+-- name: ListVisibleAgentRuntimes :many
+-- A private runtime is another member's machine and must not leak into their
+-- runtime list. The owner can always see their own runtime; everyone else
+-- sees only runtimes the owner has explicitly shared with the workspace.
+SELECT * FROM agent_runtime
+WHERE workspace_id = $1
+  AND (owner_id = $2 OR visibility = 'public')
+ORDER BY created_at ASC;
+
 -- name: GetAgentRuntime :one
 SELECT * FROM agent_runtime
 WHERE id = $1;
@@ -243,17 +252,33 @@ RETURNING id, workspace_id, owner_id, daemon_id, provider;
 
 -- name: FailTasksForOfflineRuntimes :many
 -- Marks dispatched/running/waiting_local_directory tasks as failed when
--- their runtime is offline. This cleans up orphaned tasks after a daemon
--- crash or network partition.
-UPDATE agent_task_queue
+-- their runtime has remained offline beyond the reconnect grace. A short or
+-- medium network partition must not terminate a daemon process that is still
+-- running locally; a real daemon restart is recovered separately through
+-- RecoverOrphanedTasksForRuntime. Bounded per tick so a large recovery backlog
+-- cannot monopolise the sweeper transaction. last_seen_at is normally set by
+-- the first heartbeat; updated_at is only the fallback for a never-heartbeated
+-- runtime, and a forced-offline write starts its grace from that update.
+WITH victims AS (
+  SELECT task.id
+  FROM agent_task_queue task
+  JOIN agent_runtime runtime ON runtime.id = task.runtime_id
+  WHERE task.status IN ('dispatched', 'running', 'waiting_local_directory')
+    AND runtime.status = 'offline'
+    AND COALESCE(runtime.last_seen_at, runtime.updated_at) <
+        now() - make_interval(secs => @reconnect_grace_secs::double precision)
+  ORDER BY COALESCE(runtime.last_seen_at, runtime.updated_at), task.created_at
+  LIMIT @max_per_tick::int
+  FOR UPDATE OF task SKIP LOCKED
+)
+UPDATE agent_task_queue AS task
 SET status = 'failed', completed_at = now(), error = 'runtime went offline',
     failure_reason = 'runtime_offline',
     wait_reason = NULL
-WHERE status IN ('dispatched', 'running', 'waiting_local_directory')
-  AND runtime_id IN (
-    SELECT id FROM agent_runtime WHERE status = 'offline'
-  )
-RETURNING *;
+FROM victims
+WHERE task.id = victims.id
+  AND task.status IN ('dispatched', 'running', 'waiting_local_directory')
+RETURNING task.*;
 
 -- name: ListAgentRuntimesByOwner :many
 SELECT * FROM agent_runtime
@@ -470,6 +495,8 @@ WHERE status = 'offline'
     SELECT 1
     FROM agent
     WHERE agent.runtime_id = agent_runtime.id
+      AND agent.kind = 'user'
+      AND agent.archived_at IS NULL
   )
   AND NOT EXISTS (
     SELECT 1
@@ -494,6 +521,8 @@ SELECT EXISTS (
       SELECT 1
       FROM agent
       WHERE agent.runtime_id = agent_runtime.id
+        AND agent.kind = 'user'
+        AND agent.archived_at IS NULL
     )
 ) AS eligible;
 
@@ -503,11 +532,10 @@ SELECT EXISTS (
 SELECT count(*) FROM agent_task_queue WHERE runtime_id = $1;
 
 -- name: CountStaleOfflineRuntimesBlockedByTasks :one
--- Bounded observability sample of runtimes that are otherwise GC-eligible but
--- retain a non-terminal task. In particular, deferred tasks have no generic
--- TTL, so silently filtering them from the candidate batch would hide a
--- permanently-starved runtime. The count saturates at max_rows so this
--- recurring safety signal cannot become an unbounded backlog scan.
+-- Preserve the original blocked-runtimes signal for dashboard and alert
+-- compatibility. This deliberately counts only otherwise-unowned stale
+-- runtimes with a directly pinned non-terminal task; the broader reason
+-- inventory below is exposed under a separate backlog metric.
 SELECT count(*) FROM (
   SELECT 1 FROM agent_runtime
   WHERE status = 'offline'
@@ -525,3 +553,54 @@ SELECT count(*) FROM (
     )
   LIMIT @max_rows::int
 ) AS blocked_runtimes;
+
+-- name: CountStaleOfflineRuntimeGCBacklogByReason :many
+-- Classifies one bounded oldest-first cohort into mutually exclusive states.
+-- active_agent has priority because it already makes the runtime ineligible;
+-- archived cross-workspace bindings get their own diagnostic bucket. The task
+-- branch mirrors teardown's fail-closed predicate, including tasks owned by a
+-- bound user agent but pinned to another runtime after a historical move.
+WITH stale_runtimes AS MATERIALIZED (
+  SELECT id, workspace_id FROM agent_runtime
+  WHERE status = 'offline'
+    AND last_seen_at < now() - make_interval(secs => @stale_seconds::double precision)
+  ORDER BY last_seen_at ASC, id ASC
+  LIMIT @max_rows::int
+), classified AS (
+  SELECT CASE
+    WHEN EXISTS (
+      SELECT 1 FROM agent
+      WHERE agent.runtime_id = stale_runtimes.id
+        AND agent.kind = 'user'
+        AND agent.archived_at IS NULL
+    ) THEN 'active_agent'::text
+    WHEN EXISTS (
+      SELECT 1 FROM agent
+      WHERE agent.runtime_id = stale_runtimes.id
+        AND agent.kind = 'user'
+        AND agent.workspace_id <> stale_runtimes.workspace_id
+    ) THEN 'workspace_mismatch'::text
+    WHEN EXISTS (
+      SELECT 1 FROM agent_task_queue AS task
+      WHERE task.runtime_id = stale_runtimes.id
+        AND task.completed_at IS NULL
+    ) OR EXISTS (
+      SELECT 1
+      FROM agent AS owner
+      WHERE owner.runtime_id = stale_runtimes.id
+        AND owner.kind = 'user'
+        AND EXISTS (
+          SELECT 1
+          FROM agent_task_queue AS task
+          WHERE task.agent_id = owner.id
+            AND task.completed_at IS NULL
+        )
+    ) THEN 'non_terminal_task'::text
+    ELSE 'eligible'::text
+  END AS reason
+  FROM stale_runtimes
+)
+SELECT reason, count(*)::bigint AS count
+FROM classified
+GROUP BY reason
+ORDER BY reason;

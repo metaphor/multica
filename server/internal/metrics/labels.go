@@ -30,27 +30,36 @@ const (
 	labelEventKind    = "event_kind"
 	labelAction       = "action"
 	labelResult       = "result"
+	labelQuery        = "query"
 	labelOp           = "op"
 	labelGate         = "gate"
+	labelOutcome      = "outcome"
+	labelStage        = "stage"
 )
 
 var businessMetricLabels = map[string][]string{
-	"multica_agent_task_enqueued_total":     {labelSource, labelRuntimeMode},
-	"multica_agent_task_dispatched_total":   {labelSource, labelRuntimeMode},
-	"multica_agent_task_started_total":      {labelSource, labelRuntimeMode, labelProvider},
-	"multica_agent_task_terminal_total":     {labelSource, labelRuntimeMode, labelTerminalStatus},
-	"multica_agent_task_failed_total":       {labelSource, labelRuntimeMode, labelFailureReason},
-	"multica_agent_task_queue_wait_seconds": {labelSource, labelRuntimeMode},
-	"multica_agent_task_run_seconds":        {labelSource, labelRuntimeMode, labelTerminalStatus},
-	"multica_agent_task_total_seconds":      {labelSource, labelRuntimeMode, labelTerminalStatus},
-	"multica_agent_task_in_progress":        {labelSource, labelRuntimeMode},
-	"multica_agent_task_iteration_count":    {labelSource, labelTerminalStatus},
-	"multica_llm_tokens_total":              {labelProvider, labelModel, labelTokenType, labelRuntimeMode, labelSource},
-	"multica_llm_cost_usd_total":            {labelProvider, labelModel, labelTokenType, labelRuntimeMode, labelSource},
-	"multica_llm_unpriced_tokens_total":     {labelProvider, labelModelAlias, labelTokenType},
-	"multica_llm_request_total":             {labelProvider, labelModel, labelRuntimeMode},
-	"multica_task_queued_expired_total":     {labelSource, labelRuntimeMode},
-	"multica_task_lease_expired_total":      {labelSource},
+	"multica_agent_task_enqueued_total":                {labelSource, labelRuntimeMode},
+	"multica_agent_task_dispatched_total":              {labelSource, labelRuntimeMode},
+	"multica_agent_task_started_total":                 {labelSource, labelRuntimeMode, labelProvider},
+	"multica_agent_task_terminal_total":                {labelSource, labelRuntimeMode, labelTerminalStatus},
+	"multica_agent_task_failed_total":                  {labelSource, labelRuntimeMode, labelFailureReason},
+	"multica_agent_task_queue_wait_seconds":            {labelSource, labelRuntimeMode},
+	"multica_agent_task_run_seconds":                   {labelSource, labelRuntimeMode, labelTerminalStatus},
+	"multica_agent_task_total_seconds":                 {labelSource, labelRuntimeMode, labelTerminalStatus},
+	"multica_agent_task_in_progress":                   {labelSource, labelRuntimeMode},
+	"multica_agent_task_iteration_count":               {labelSource, labelTerminalStatus},
+	"multica_llm_tokens_total":                         {labelProvider, labelModel, labelTokenType, labelRuntimeMode, labelSource},
+	"multica_llm_cost_usd_total":                       {labelProvider, labelModel, labelTokenType, labelRuntimeMode, labelSource},
+	"multica_llm_unpriced_tokens_total":                {labelProvider, labelModelAlias, labelTokenType},
+	"multica_llm_request_total":                        {labelProvider, labelModel, labelRuntimeMode},
+	"multica_task_queued_expired_total":                {labelSource, labelRuntimeMode},
+	"multica_task_lease_expired_total":                 {labelSource},
+	"multica_chat_claim_session_fallback_needed_total": {},
+	"multica_chat_claim_session_fallback_result_total": {labelResult},
+	"multica_chat_claim_resume_query_duration_seconds": {labelQuery},
+	"multica_runtime_sweeper_stage_duration_seconds":   {labelStage},
+	"multica_runtime_sweeper_candidate_rows_total":     {labelStage},
+	"multica_runtime_sweeper_rows_changed_total":       {labelStage},
 
 	// PR3 funnel / community / commercial.
 	"multica_signup_total":                             {labelSignupSource},
@@ -73,12 +82,15 @@ var businessMetricLabels = map[string][]string{
 	"multica_runtime_ready_seconds":                    {labelRuntimeMode, labelProvider},
 	"multica_runtime_failed_total":                     {labelRuntimeMode, labelProvider, labelFailureReason, labelRecoverable},
 	"multica_runtime_offline_total":                    {labelRuntimeMode, labelProvider},
+	"multica_runtime_gc_skipped_total":                 {labelReason},
+	"multica_runtime_gc_backlog_runtimes":              {labelReason},
 	"multica_daemon_ws_message_received_total":         {labelKind},
 	"multica_autopilot_run_started_total":              {labelCadence, labelTriggerKind},
 	"multica_autopilot_run_terminal_total":             {labelCadence, labelTriggerKind, labelTerminalStatus},
 	"multica_autopilot_run_skipped_total":              {labelCadence, labelReason},
 	"multica_webhook_delivery_total":                   {labelProvider, labelStatus},
 	"multica_webhook_rate_limited_total":               {labelGate},
+	"multica_email_rate_limited_total":                 {labelAction, labelGate},
 	"multica_github_event_received_total":              {labelEventKind, labelAction},
 	"multica_github_pr_review_total":                   {labelResult},
 	"multica_cloudruntime_request_total":               {labelOp, labelStatus},
@@ -86,6 +98,12 @@ var businessMetricLabels = map[string][]string{
 	"multica_feedback_submitted_total":                 {labelKind, labelPlatform},
 	"multica_contact_sales_submitted_total":            {labelSource},
 	"multica_chat_output_local_path_total":             {labelKind},
+	"multica_entitlement_cache_total":                  {labelOutcome},
+	"multica_entitlement_refresh_total":                {labelOutcome},
+	"multica_entitlement_refresh_duration_seconds":     {labelOutcome},
+	"multica_entitlement_decision_total":               {labelGate, labelAction, labelReason},
+	"multica_entitlement_version_regression_total":     {},
+	"multica_autopilot_quota_decision_total":           {labelAction, labelSource, labelResult},
 }
 
 var forbiddenMetricLabels = map[string]struct{}{
@@ -135,6 +153,9 @@ var (
 		"kiro":          "kiro",
 		"kimi":          "kimi",
 		"reasonix":      "reasonix",
+		"dim":           "dim",
+		"mcode":         "mcode",
+		"zeroclaw":      "zeroclaw",
 		"multica_agent": "multica_agent",
 		"openclaw":      "openclaw",
 		"opencode":      "opencode",

@@ -2,12 +2,37 @@ package metrics
 
 import (
 	"sync"
+	"time"
 
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
 var taskDurationBuckets = []float64{1, 2.5, 5, 10, 30, 60, 120, 300, 600, 1200, 3600, 7200}
+
+var chatClaimResumeQueryDurationBuckets = []float64{0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5}
+
+var runtimeSweepStageDurationBuckets = []float64{0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 15, 30, 60}
+
+const (
+	RuntimeSweepStageLiveness                 = "runtime_liveness"
+	RuntimeSweepStageOfflineTasks             = "offline_runtime_tasks"
+	RuntimeSweepStageReconnectRetries         = "runtime_reconnect_retries"
+	RuntimeSweepStageStaleTasks               = "stale_tasks"
+	RuntimeSweepStageQueuedExpiry             = "queued_task_expiry"
+	RuntimeSweepStageDelegatedFailureRecovery = "delegated_failure_recovery"
+	RuntimeSweepStageDeferredChatFinalization = "deferred_chat_finalize"
+	RuntimeSweepStageGC                       = "runtime_gc"
+
+	RuntimeGCSkipEligibilityChanged = "eligibility_changed"
+	RuntimeGCSkipNonTerminalTask    = "non_terminal_task"
+	RuntimeGCSkipWorkspaceMismatch  = "workspace_mismatch"
+
+	RuntimeGCBacklogActiveAgent       = "active_agent"
+	RuntimeGCBacklogNonTerminalTask   = "non_terminal_task"
+	RuntimeGCBacklogWorkspaceMismatch = "workspace_mismatch"
+	RuntimeGCBacklogEligible          = "eligible"
+)
 
 type activeTaskLabels struct {
 	source      string
@@ -33,10 +58,25 @@ type BusinessMetrics struct {
 
 	taskQueuedExpired                 *prometheus.CounterVec
 	taskLeaseExpired                  *prometheus.CounterVec
+	chatClaimSessionFallbackNeeded    prometheus.Counter
+	chatClaimSessionFallbackResult    *prometheus.CounterVec
+	chatClaimResumeQueryDuration      *prometheus.HistogramVec
+	runtimeSweepStageDuration         *prometheus.HistogramVec
+	runtimeSweepCandidateRows         *prometheus.CounterVec
+	runtimeSweepRowsChanged           *prometheus.CounterVec
 	runtimeGCDeleted                  prometheus.Counter
 	runtimeGCFailed                   prometheus.Counter
+	runtimeGCSkipped                  *prometheus.CounterVec
 	runtimeGCBlocked                  prometheus.Gauge
+	runtimeGCBacklog                  *prometheus.GaugeVec
 	runtimeGCBlockedObservationFailed prometheus.Counter
+	entitlementConfigError            prometheus.Counter
+	entitlementCache                  *prometheus.CounterVec
+	entitlementRefresh                *prometheus.CounterVec
+	entitlementRefreshDuration        *prometheus.HistogramVec
+	entitlementDecision               *prometheus.CounterVec
+	entitlementVersionRegression      prometheus.Counter
+	autopilotQuotaDecision            *prometheus.CounterVec
 
 	activeMu    sync.Mutex
 	activeTasks map[string]activeTaskLabels
@@ -149,6 +189,44 @@ func NewBusinessMetrics() *BusinessMetrics {
 			Name:      "lease_expired_total",
 			Help:      "Total dispatched or running task leases expired by the scheduler.",
 		}, metricLabels("multica_task_lease_expired_total")),
+		chatClaimSessionFallbackNeeded: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "multica",
+			Subsystem: "chat_claim",
+			Name:      "session_fallback_needed_total",
+			Help:      "Total chat claims whose session pointer lacked a provider session or workdir.",
+		}),
+		chatClaimSessionFallbackResult: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "multica",
+			Subsystem: "chat_claim",
+			Name:      "session_fallback_result_total",
+			Help:      "Total chat-claim session fallback query results (hit, miss, or error).",
+		}, metricLabels("multica_chat_claim_session_fallback_result_total")),
+		chatClaimResumeQueryDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: "multica",
+			Subsystem: "chat_claim",
+			Name:      "resume_query_duration_seconds",
+			Help:      "Duration of chat-claim resume-history queries by fixed query name.",
+			Buckets:   chatClaimResumeQueryDurationBuckets,
+		}, metricLabels("multica_chat_claim_resume_query_duration_seconds")),
+		runtimeSweepStageDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: "multica",
+			Subsystem: "runtime_sweeper",
+			Name:      "stage_duration_seconds",
+			Help:      "Duration of each runtime maintenance sweeper stage.",
+			Buckets:   runtimeSweepStageDurationBuckets,
+		}, metricLabels("multica_runtime_sweeper_stage_duration_seconds")),
+		runtimeSweepCandidateRows: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "multica",
+			Subsystem: "runtime_sweeper",
+			Name:      "candidate_rows_total",
+			Help:      "Total candidate rows returned to or examined by the application in each runtime maintenance sweeper stage.",
+		}, metricLabels("multica_runtime_sweeper_candidate_rows_total")),
+		runtimeSweepRowsChanged: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "multica",
+			Subsystem: "runtime_sweeper",
+			Name:      "rows_changed_total",
+			Help:      "Total rows whose persisted maintenance state changed in each runtime sweeper stage.",
+		}, metricLabels("multica_runtime_sweeper_rows_changed_total")),
 		runtimeGCDeleted: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "multica",
 			Subsystem: "runtime_gc",
@@ -161,22 +239,68 @@ func NewBusinessMetrics() *BusinessMetrics {
 			Name:      "failed_total",
 			Help:      "Total runtime garbage-collection operations that failed.",
 		}),
+		runtimeGCSkipped: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "multica",
+			Subsystem: "runtime_gc",
+			Name:      "skipped_total",
+			Help:      "Total runtime garbage-collection candidates safely skipped by reason.",
+		}, metricLabels("multica_runtime_gc_skipped_total")),
 		runtimeGCBlocked: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "multica",
 			Subsystem: "runtime_gc",
 			Name:      "blocked_runtimes",
 			Help:      "Bounded count of stale offline runtimes blocked from garbage collection by non-terminal tasks.",
 		}),
+		runtimeGCBacklog: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: "multica",
+			Subsystem: "runtime_gc",
+			Name:      "backlog_runtimes",
+			Help:      "Bounded oldest-first sample of stale offline runtimes classified by garbage-collection state.",
+		}, metricLabels("multica_runtime_gc_backlog_runtimes")),
 		runtimeGCBlockedObservationFailed: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "multica",
 			Subsystem: "runtime_gc",
 			Name:      "blocked_observation_failed_total",
 			Help:      "Total failures while observing stale runtimes blocked from garbage collection.",
 		}),
+		entitlementConfigError: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "multica", Subsystem: "entitlement", Name: "config_error_total",
+			Help: "Total startup failures caused by a malformed Multica Cloud URL for entitlement policy.",
+		}),
+		entitlementCache: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "multica", Subsystem: "entitlement", Name: "cache_total",
+			Help: "Total entitlement cache outcomes.",
+		}, metricLabels("multica_entitlement_cache_total")),
+		entitlementRefresh: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "multica", Subsystem: "entitlement", Name: "refresh_total",
+			Help: "Total entitlement refresh outcomes.",
+		}, metricLabels("multica_entitlement_refresh_total")),
+		entitlementRefreshDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: "multica", Subsystem: "entitlement", Name: "refresh_duration_seconds",
+			Help: "Duration of entitlement refreshes.", Buckets: chatClaimResumeQueryDurationBuckets,
+		}, metricLabels("multica_entitlement_refresh_duration_seconds")),
+		entitlementDecision: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "multica", Subsystem: "entitlement", Name: "decision_total",
+			Help: "Total entitlement decisions by bounded gate, action, and reason.",
+		}, metricLabels("multica_entitlement_decision_total")),
+		entitlementVersionRegression: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "multica", Subsystem: "entitlement", Name: "version_regression_total",
+			Help: "Total rejected entitlement subscription-version regressions.",
+		}),
+		autopilotQuotaDecision: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "multica", Subsystem: "autopilot_quota", Name: "decision_total",
+			Help: "Total autopilot quota admission outcomes.",
+		}, metricLabels("multica_autopilot_quota_decision_total")),
 		activeTasks: map[string]activeTaskLabels{},
 		events:      newBusinessEventMetrics(),
 	}
 	m.prewarmFailureReasons()
+	for _, reason := range []string{RuntimeGCSkipEligibilityChanged, RuntimeGCSkipNonTerminalTask, RuntimeGCSkipWorkspaceMismatch} {
+		m.runtimeGCSkipped.WithLabelValues(reason).Add(0)
+	}
+	for _, reason := range []string{RuntimeGCBacklogActiveAgent, RuntimeGCBacklogNonTerminalTask, RuntimeGCBacklogWorkspaceMismatch, RuntimeGCBacklogEligible} {
+		m.runtimeGCBacklog.WithLabelValues(reason).Set(0)
+	}
 	return m
 }
 
@@ -198,11 +322,70 @@ func (m *BusinessMetrics) Collectors() []prometheus.Collector {
 		m.llmRequests,
 		m.taskQueuedExpired,
 		m.taskLeaseExpired,
+		m.chatClaimSessionFallbackNeeded,
+		m.chatClaimSessionFallbackResult,
+		m.chatClaimResumeQueryDuration,
+		m.runtimeSweepStageDuration,
+		m.runtimeSweepCandidateRows,
+		m.runtimeSweepRowsChanged,
 		m.runtimeGCDeleted,
 		m.runtimeGCFailed,
+		m.runtimeGCSkipped,
 		m.runtimeGCBlocked,
+		m.runtimeGCBacklog,
 		m.runtimeGCBlockedObservationFailed,
+		m.entitlementConfigError,
+		m.entitlementCache,
+		m.entitlementRefresh,
+		m.entitlementRefreshDuration,
+		m.entitlementDecision,
+		m.entitlementVersionRegression,
+		m.autopilotQuotaDecision,
 	}, m.events.collectors()...)
+}
+
+func (m *BusinessMetrics) RecordEntitlementConfigError() {
+	if m != nil {
+		m.entitlementConfigError.Inc()
+	}
+}
+
+func (m *BusinessMetrics) RecordEntitlementCache(outcome string) {
+	if m != nil {
+		m.entitlementCache.WithLabelValues(outcome).Inc()
+	}
+}
+
+func (m *BusinessMetrics) RecordEntitlementRefresh(outcome string, seconds float64) {
+	if m == nil {
+		return
+	}
+	m.entitlementRefresh.WithLabelValues(outcome).Inc()
+	m.entitlementRefreshDuration.WithLabelValues(outcome).Observe(seconds)
+}
+
+func (m *BusinessMetrics) RecordEntitlementDecision(gate, action, reason string) {
+	if m != nil {
+		m.entitlementDecision.WithLabelValues(gate, action, reason).Inc()
+	}
+}
+
+func (m *BusinessMetrics) RecordEntitlementVersionRegression() {
+	if m != nil {
+		m.entitlementVersionRegression.Inc()
+	}
+}
+
+func (m *BusinessMetrics) RecordAutopilotQuotaDecision(action, source, result string) {
+	if m == nil {
+		return
+	}
+	switch source {
+	case "schedule", "webhook", "manual", "api":
+	default:
+		source = "other"
+	}
+	m.autopilotQuotaDecision.WithLabelValues(action, source, result).Inc()
 }
 
 func (m *BusinessMetrics) RecordRuntimeGCDeleted() {
@@ -219,6 +402,20 @@ func (m *BusinessMetrics) RecordRuntimeGCFailed() {
 	m.runtimeGCFailed.Inc()
 }
 
+func (m *BusinessMetrics) RecordRuntimeGCSkipped(reason string) {
+	if m == nil {
+		return
+	}
+	m.runtimeGCSkipped.WithLabelValues(normalizeRuntimeGCSkipReason(reason)).Inc()
+}
+
+func (m *BusinessMetrics) SetRuntimeGCBacklog(reason string, count int64) {
+	if m == nil {
+		return
+	}
+	m.runtimeGCBacklog.WithLabelValues(normalizeRuntimeGCBacklogReason(reason)).Set(float64(count))
+}
+
 func (m *BusinessMetrics) SetRuntimeGCBlocked(count int64) {
 	if m == nil {
 		return
@@ -231,6 +428,60 @@ func (m *BusinessMetrics) RecordRuntimeGCBlockedObservationFailed() {
 		return
 	}
 	m.runtimeGCBlockedObservationFailed.Inc()
+}
+
+func normalizeRuntimeGCSkipReason(reason string) string {
+	switch reason {
+	case RuntimeGCSkipEligibilityChanged, RuntimeGCSkipNonTerminalTask, RuntimeGCSkipWorkspaceMismatch:
+		return reason
+	default:
+		return "unknown"
+	}
+}
+
+func normalizeRuntimeGCBacklogReason(reason string) string {
+	switch reason {
+	case RuntimeGCBacklogActiveAgent, RuntimeGCBacklogNonTerminalTask, RuntimeGCBacklogWorkspaceMismatch, RuntimeGCBacklogEligible:
+		return reason
+	default:
+		return "unknown"
+	}
+}
+
+// ObserveRuntimeSweepStage records one bounded-cardinality maintenance stage.
+// candidates is the number of rows returned to or examined by the application,
+// not PostgreSQL executor rows; changed is the subset whose persisted
+// maintenance state changed.
+func (m *BusinessMetrics) ObserveRuntimeSweepStage(stage string, duration time.Duration, candidates, changed int) {
+	if m == nil {
+		return
+	}
+	stage = normalizeRuntimeSweepStage(stage)
+	if candidates < 0 {
+		candidates = 0
+	}
+	if changed < 0 {
+		changed = 0
+	}
+	m.runtimeSweepStageDuration.WithLabelValues(stage).Observe(duration.Seconds())
+	m.runtimeSweepCandidateRows.WithLabelValues(stage).Add(float64(candidates))
+	m.runtimeSweepRowsChanged.WithLabelValues(stage).Add(float64(changed))
+}
+
+func normalizeRuntimeSweepStage(stage string) string {
+	switch stage {
+	case RuntimeSweepStageLiveness,
+		RuntimeSweepStageOfflineTasks,
+		RuntimeSweepStageReconnectRetries,
+		RuntimeSweepStageStaleTasks,
+		RuntimeSweepStageQueuedExpiry,
+		RuntimeSweepStageDelegatedFailureRecovery,
+		RuntimeSweepStageDeferredChatFinalization,
+		RuntimeSweepStageGC:
+		return stage
+	default:
+		return "other"
+	}
 }
 
 func (m *BusinessMetrics) RecordTaskEnqueued(source, runtimeMode string) {
@@ -308,6 +559,49 @@ func (m *BusinessMetrics) RecordTaskLeaseExpired(source string) {
 		return
 	}
 	m.taskLeaseExpired.WithLabelValues(NormalizeTaskSource(source)).Inc()
+}
+
+// RecordChatClaimSessionFallbackNeeded counts a claim whose chat-session
+// pointer lacked either the provider session or the workdir.
+func (m *BusinessMetrics) RecordChatClaimSessionFallbackNeeded() {
+	if m == nil {
+		return
+	}
+	m.chatClaimSessionFallbackNeeded.Inc()
+}
+
+func (m *BusinessMetrics) RecordChatClaimSessionFallbackHit() {
+	m.recordChatClaimSessionFallbackResult("hit")
+}
+
+func (m *BusinessMetrics) RecordChatClaimSessionFallbackMiss() {
+	m.recordChatClaimSessionFallbackResult("miss")
+}
+
+func (m *BusinessMetrics) RecordChatClaimSessionFallbackError() {
+	m.recordChatClaimSessionFallbackResult("error")
+}
+
+func (m *BusinessMetrics) recordChatClaimSessionFallbackResult(result string) {
+	if m == nil {
+		return
+	}
+	m.chatClaimSessionFallbackResult.WithLabelValues(result).Inc()
+}
+
+func (m *BusinessMetrics) observeChatClaimResumeQuery(query string, seconds float64) {
+	if m == nil || seconds < 0 {
+		return
+	}
+	m.chatClaimResumeQueryDuration.WithLabelValues(query).Observe(seconds)
+}
+
+func (m *BusinessMetrics) ObserveChatClaimLastSessionQuery(seconds float64) {
+	m.observeChatClaimResumeQuery("last_session", seconds)
+}
+
+func (m *BusinessMetrics) ObserveChatClaimRolloutMissingQuery(seconds float64) {
+	m.observeChatClaimResumeQuery("rollout_missing", seconds)
 }
 
 // costUSDTicks is the provider's own price for this usage in 1e-10 USD, or 0

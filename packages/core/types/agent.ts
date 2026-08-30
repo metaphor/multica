@@ -120,6 +120,7 @@ export const RUNTIME_PROFILE_PROTOCOL_FAMILIES = [
   "kimi",
   "reasonix",
   "dsh",
+  "dim",
   "kiro",
   "antigravity",
   "qoder",
@@ -128,6 +129,8 @@ export const RUNTIME_PROFILE_PROTOCOL_FAMILIES = [
   "grok",
   "qwen",
   "qwenpaw",
+  "mcode",
+  "zeroclaw",
 ] as const;
 
 export type RuntimeProtocolFamily =
@@ -184,6 +187,7 @@ export type TaskFailureReason =
   | "timeout"
   | "codex_semantic_inactivity"
   | "runtime_offline"
+  | "runtime_reconnect_timeout"
   | "runtime_recovery"
   | "manual";
 
@@ -380,6 +384,20 @@ export interface AgentTask {
   /** Custom workdir path from project settings; meaningful only when enable_agent_workdir is true. */
   agent_workdir?: string;
   /**
+   * Durable directory that replaces `work_dir` after the daemon confirms a
+   * disposable local worktree was finalized and removed. Terminal tasks may
+   * use this for explicit clipboard actions; its absence means `work_dir`
+   * remains authoritative (including preserved-worktree failures and older
+   * daemon/server combinations). This is a point-in-time delivery snapshot;
+   * later resource renames or detachments do not rewrite historical tasks.
+   */
+  durable_work_dir?: string;
+  /**
+   * Privacy-safe display form of `durable_work_dir`. Never render the absolute
+   * durable path directly; older backends omit both fields.
+   */
+  relative_durable_work_dir?: string;
+  /**
    * Git branch this run delivered its work on. Set only by worktree-mode
    * local_directory tasks, where the agent never touches the user's working
    * copy — the branch is the only pointer to what it produced.
@@ -463,6 +481,8 @@ export interface Agent {
   /** What this agent's owner wrote. For a system agent this holds only the
    *  workspace's own notes — the product half is `system_instructions`. */
   instructions: string;
+  /** Up to three agent-authored first-turn suggestions. Older servers omit it. */
+  conversation_starters?: AgentConversationStarter[];
   /** Set for product-defined agents (e.g. "mika"). Absent for user- and
    *  template-created agents. Identity for "maintained by Multica" checks —
    *  never the display name, which owners may change. */
@@ -574,6 +594,13 @@ export interface Agent {
   archived_by: string | null;
 }
 
+export interface AgentConversationStarter {
+  /** Short chip label shown in the empty state. */
+  label: string;
+  /** Full editable text copied into the composer when selected. */
+  prompt: string;
+}
+
 export interface DisabledRuntimeSkill {
   runtime_id: string;
   provider: string;
@@ -611,6 +638,7 @@ export interface CreateAgentRequest {
   name: string;
   description?: string;
   instructions?: string;
+  conversation_starters?: AgentConversationStarter[];
   avatar_url?: string;
   runtime_id: string;
   runtime_config?: Record<string, unknown>;
@@ -663,6 +691,7 @@ export interface StoredAgentDraft {
   name: string;
   description: string;
   instructions: string;
+  conversation_starters: AgentConversationStarter[];
   avatar_url: string | null;
   model: string;
   thinking_level: string;
@@ -705,6 +734,7 @@ export interface UpdateAgentRequest {
   name?: string;
   description?: string;
   instructions?: string;
+  conversation_starters?: AgentConversationStarter[];
   avatar_url?: string;
   runtime_id?: string;
   runtime_config?: Record<string, unknown>;
@@ -835,6 +865,19 @@ export interface CreateSkillRequest {
   content?: string;
   config?: Record<string, unknown>;
   files?: { path: string; content: string }[];
+}
+
+/** Structured body of POST /api/skills/import when uploading an archive. */
+export interface SkillImportResult {
+  status: "created" | "updated" | "conflict" | "skipped" | "failed";
+  reason?: string;
+  skill?: Skill;
+  existing_skill?: {
+    id: string;
+    name: string;
+    created_by?: string;
+    can_overwrite?: boolean;
+  };
 }
 
 export interface UpdateSkillRequest {

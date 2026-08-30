@@ -218,6 +218,9 @@ deleted_channel_outbound_cards AS (
 deleted_lark_outbound_cards AS (
     DELETE FROM lark_outbound_card_message WHERE task_id IN (SELECT id FROM batch)
 ),
+deleted_channel_task_deliveries AS (
+    DELETE FROM channel_task_delivery WHERE task_id IN (SELECT id FROM batch)
+),
 deleted_draft_restores AS (
     DELETE FROM chat_draft_restore WHERE task_id IN (SELECT id FROM batch)
 )
@@ -427,6 +430,18 @@ deleted_github_check_suites AS (
 deleted_pending_github_suites AS (
     DELETE FROM github_pending_check_suite WHERE workspace_id = $1
 ),
+deleted_channel_task_deliveries AS (
+    DELETE FROM channel_task_delivery
+    WHERE installation_id IN (SELECT id FROM ws_channel_installations)
+),
+deleted_channel_outbound_messages AS (
+    DELETE FROM channel_outbound_message
+    WHERE installation_id IN (SELECT id FROM ws_channel_installations)
+),
+deleted_channel_chat_contexts AS (
+    DELETE FROM channel_chat_context_generation
+    WHERE chat_session_id IN (SELECT id FROM ws_sessions)
+),
 deleted_vcs_commit_statuses AS (
     DELETE FROM vcs_commit_status
     WHERE connection_id IN (SELECT id FROM ws_vcs_connections)
@@ -498,6 +513,12 @@ WITH
 deleted_sessions AS (
     DELETE FROM chat_session WHERE chat_session.workspace_id = $1
 ),
+deleted_dingtalk_group_presence AS (
+    DELETE FROM dingtalk_group_presence WHERE workspace_id = $1
+),
+deleted_dingtalk_bot_identity AS (
+    DELETE FROM dingtalk_bot_identity WHERE workspace_id = $1
+),
 deleted_channel_installations AS (
     DELETE FROM channel_installation
     WHERE channel_installation.workspace_id = $1
@@ -532,6 +553,14 @@ DELETE FROM autopilot_run
 WHERE autopilot_id IN (
     SELECT id FROM autopilot WHERE autopilot.workspace_id = $1
 );
+
+-- name: DeleteWorkspaceAutopilotQuotaReservations :exec
+DELETE FROM autopilot_quota_reservation
+WHERE autopilot_quota_reservation.workspace_id = $1;
+
+-- name: DeleteWorkspaceAutopilotQuotaPeriods :exec
+DELETE FROM autopilot_quota_period
+WHERE autopilot_quota_period.workspace_id = $1;
 
 -- name: DeleteWorkspaceAutopilotChildren :exec
 WITH
@@ -568,62 +597,54 @@ WITH deleted_squads AS (
 DELETE FROM skill WHERE skill.workspace_id = $1;
 
 -- name: DeleteWorkspacePluginData :exec
--- Plugin relationships have no foreign keys or cascades. Delete the append-only
--- grant/binding history first, then installation rows. Global identity, release,
--- contribution, and artifact rows survive. Workspace-owned private registry
--- rows are removed after their execution manifests have been removed.
+-- Plugin relationships have no foreign keys or cascades. Storage and secrets
+-- hang off the installation, so both leaf tables are cleared through the
+-- workspace's installation ids before the installations themselves.
 WITH installations AS MATERIALIZED (
     SELECT plugin_installation.id
     FROM plugin_installation
     WHERE plugin_installation.workspace_id = $1
 ),
-private_identities AS MATERIALIZED (
-    SELECT plugin_identity.id
-    FROM plugin_identity
-    WHERE plugin_identity.owner_workspace_id = $1
-),
-private_releases AS MATERIALIZED (
-    SELECT plugin_release.id
-    FROM plugin_release
-    WHERE plugin_release.plugin_id IN (SELECT id FROM private_identities)
-),
-deleted_health AS (
-    DELETE FROM plugin_health
-    WHERE workspace_id = $1
-),
-deleted_execution_manifests AS (
-    DELETE FROM plugin_execution_manifest
-    WHERE workspace_id = $1
-),
-deleted_snapshots AS (
-    DELETE FROM plugin_capability_snapshot
-    WHERE workspace_id = $1
-),
-deleted_workspace_state AS (
-    DELETE FROM plugin_workspace_capability_state
-    WHERE workspace_id = $1
-),
-deleted_bindings AS (
-    DELETE FROM plugin_binding
+deleted_storage AS (
+    DELETE FROM plugin_storage
     WHERE installation_id IN (SELECT id FROM installations)
 ),
-deleted_grants AS (
-    DELETE FROM plugin_grant
+deleted_secrets AS (
+    DELETE FROM plugin_secret
     WHERE installation_id IN (SELECT id FROM installations)
 ),
-deleted_installations AS (
-    DELETE FROM plugin_installation WHERE id IN (SELECT id FROM installations)
+deleted_hook_schedules AS (
+    DELETE FROM plugin_hook_schedule
+    WHERE installation_id IN (SELECT id FROM installations)
 ),
-deleted_private_artifacts AS (
-    DELETE FROM plugin_artifact_file WHERE release_id IN (SELECT id FROM private_releases)
+-- Hook call records are workspace-scoped in their own right, so this deletes by
+-- workspace rather than through the installation ids: a row whose installation
+-- was already uninstalled would otherwise survive the workspace it described.
+deleted_invocations AS (
+    DELETE FROM plugin_invocation
+    WHERE workspace_id = $1
 ),
-deleted_private_contributions AS (
-    DELETE FROM plugin_contribution WHERE release_id IN (SELECT id FROM private_releases)
+-- Published artifacts are workspace-scoped too, and independent of whether
+-- anything installed them. Deleting the workspace without these would leave the
+-- stored bundles as the largest orphan the plugin surface can produce.
+versions AS MATERIALIZED (
+    SELECT plugin_package_version.id
+    FROM plugin_package_version
+    WHERE plugin_package_version.workspace_id = $1
 ),
-deleted_private_releases AS (
-    DELETE FROM plugin_release WHERE id IN (SELECT id FROM private_releases)
+deleted_package_files AS (
+    DELETE FROM plugin_package_file
+    WHERE version_id IN (SELECT id FROM versions)
+),
+deleted_package_versions AS (
+    DELETE FROM plugin_package_version
+    WHERE workspace_id = $1
+),
+deleted_packages AS (
+    DELETE FROM plugin_package
+    WHERE workspace_id = $1
 )
-DELETE FROM plugin_identity WHERE id IN (SELECT id FROM private_identities);
+DELETE FROM plugin_installation WHERE id IN (SELECT id FROM installations);
 
 -- name: DeleteWorkspaceAgents :exec
 DELETE FROM agent WHERE agent.workspace_id = $1;
@@ -662,6 +683,10 @@ detached_client_usage AS (
     UPDATE client_usage_daily
     SET workspace_id = NULL
     WHERE client_usage_daily.workspace_id = $1
+),
+deleted_share_links AS (
+    DELETE FROM workspace_share_link
+    WHERE workspace_share_link.workspace_id = $1
 )
 DELETE FROM workspace_invitation
 WHERE workspace_invitation.workspace_id = $1;
