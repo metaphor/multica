@@ -6,7 +6,7 @@ import { useActorName } from "@multica/core/workspace/hooks";
 import { StatusIcon, PriorityIcon } from "../../issues/components";
 import type { InboxItem, InboxItemType, IssueStatus, IssuePriority } from "@multica/core/types";
 import { getQuickCreateOutcomeDetail } from "./inbox-display";
-import { useT } from "../../i18n";
+import { useLocale, useT } from "../../i18n";
 import { useStatusLabel } from "../../issues/utils/status-label";
 import { priorityLabel } from "../../issues/utils/priority-label";
 
@@ -35,23 +35,26 @@ export function useTypeLabels(): Record<InboxItemType, string> {
     quick_create_done: t(($) => $.types.quick_create_done),
     quick_create_failed: t(($) => $.types.quick_create_failed),
     quick_create_unconfirmed: t(($) => $.types.quick_create_unconfirmed),
+    autopilot_paused: t(($) => $.types.autopilot_paused),
+    autopilot_quota_exceeded: t(($) => $.types.autopilot_quota_exceeded),
   };
 }
 
 // start_date / due_date are calendar days — format timezone-safely so the day
 // never shifts with the viewer's offset (see @multica/core/issues/date).
-function shortDate(dateStr: string): string {
-  return formatDateOnly(dateStr, { month: "short", day: "numeric" }, "en-US");
+function shortDate(dateStr: string, locale: string): string {
+  return formatDateOnly(dateStr, { month: "short", day: "numeric" }, locale);
 }
 
 export function InboxDetailLabel({ item }: { item: InboxItem }) {
   const { t } = useT("inbox");
   const { t: tIssues } = useT("issues");
+  const locale = useLocale();
   const typeLabels = useTypeLabels();
   const { getActorName } = useActorName();
   // Inbox is a cross-workspace surface, so the catalog is read per item's own
   // workspace rather than from the route. (MUL-6243)
-  const { categoryOf, colorOf } = useIssueStatuses(item.workspace_id);
+  const { categoryOf, colorOf, iconOf } = useIssueStatuses(item.workspace_id);
   const statusLabelOf = useStatusLabel(item.workspace_id);
   const details = item.details ?? {};
 
@@ -65,6 +68,7 @@ export function InboxDetailLabel({ item }: { item: InboxItem }) {
             status={details.to as IssueStatus}
             category={categoryOf(details.to)}
             color={colorOf(details.to)}
+            icon={iconOf(details.to)}
             className="h-3 w-3"
           />
           {statusLabelOf(details.to)}
@@ -97,11 +101,11 @@ export function InboxDetailLabel({ item }: { item: InboxItem }) {
       return <span>{typeLabels[item.type]}</span>;
     }
     case "start_date_changed": {
-      if (details.to) return <span>{t(($) => $.labels.set_start_date_to, { date: shortDate(details.to) })}</span>;
+      if (details.to) return <span>{t(($) => $.labels.set_start_date_to, { date: shortDate(details.to, locale) })}</span>;
       return <span>{t(($) => $.labels.removed_start_date)}</span>;
     }
     case "due_date_changed": {
-      if (details.to) return <span>{t(($) => $.labels.set_due_date_to, { date: shortDate(details.to) })}</span>;
+      if (details.to) return <span>{t(($) => $.labels.set_due_date_to, { date: shortDate(details.to, locale) })}</span>;
       return <span>{t(($) => $.labels.removed_due_date)}</span>;
     }
     case "new_comment": {
@@ -130,6 +134,8 @@ export function InboxDetailLabel({ item }: { item: InboxItem }) {
       if (detail) return <span>{detail}</span>;
       return <span>{typeLabels[item.type]}</span>;
     }
+    case "autopilot_quota_exceeded":
+      return <span>{t(($) => $.labels.autopilot_quota_blocked)}</span>;
     default:
       return <span>{typeLabels[item.type] ?? item.type}</span>;
   }

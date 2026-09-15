@@ -79,3 +79,4 @@ data/
 # Python (agent tooling)
 __pycache__/
 *.pyc
+perf-report/
