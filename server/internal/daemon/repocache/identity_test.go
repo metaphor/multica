@@ -125,7 +125,7 @@ func TestCheckoutIdentityMigratesExistingWorktree(t *testing.T) {
 			f := newExistingCheckoutFixture(t, false)
 			bare := f.cache.Lookup("ws-1", f.source)
 			polluteCacheIdentity(t, bare)
-			path := filepath.Join(f.workDir, repoNameFromURL(f.source))
+			path := filepath.Join(f.workDir, RepoNameFromURL(f.source))
 			gitIdentityCommand(t, "-C", bare, "worktree", "add", "-b", taskBranchName(firstTaskID), path)
 			other := filepath.Join(t.TempDir(), "active")
 			gitIdentityCommand(t, "-C", bare, "worktree", "add", "-b", "other-active-task", other)
@@ -182,7 +182,7 @@ func TestCheckoutIdentityUserConfigAndCoauthor(t *testing.T) {
 	t.Setenv("GIT_AUTHOR_EMAIL", "env@example.com")
 	t.Setenv("GIT_COMMITTER_NAME", "Environment")
 	t.Setenv("GIT_COMMITTER_EMAIL", "env@example.com")
-	assertCommitIdentity(t, filepath.Join(f.workDir, repoNameFromURL(f.source)), "Environment", "env@example.com")
+	assertCommitIdentity(t, filepath.Join(f.workDir, RepoNameFromURL(f.source)), "Environment", "env@example.com")
 }
 
 func TestCheckoutIdentityWithoutUserFailsClosed(t *testing.T) {

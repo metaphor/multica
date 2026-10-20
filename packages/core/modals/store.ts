@@ -11,9 +11,11 @@ type ModalType =
   | "issue-set-parent"
   | "issue-mark-duplicate"
   | "issue-add-child"
+  | "issue-rename"
   | "issue-delete-confirm"
   | "issue-run-confirm"
   | "merge-request-diff"
+  | "issue-workflow-handoff"
   | null;
 
 export type IssueLimitRecoveryReason = "issue_limit" | "autopilot_quota";
