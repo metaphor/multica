@@ -37,6 +37,8 @@ import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
 import { Switch } from "@multica/ui/components/ui/switch";
+import { IconButton } from "@multica/ui/components/common/icon-button";
+import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@multica/ui/components/ui/resizable";
 import { Sheet, SheetContent } from "@multica/ui/components/ui/sheet";
 import { useIsMobile } from "@multica/ui/hooks/use-mobile";
@@ -116,6 +118,7 @@ function ProjectWorkflowPropRow({ project }: { project: Project }) {
 
 export function ProjectDetail({ projectId }: { projectId: string }) {
   const { t } = useT("projects");
+  const { t: tCommon } = useT("common");
   const statusLabels = useProjectStatusLabels();
   const priorityLabels = useProjectPriorityLabels();
   const wsId = useWorkspaceId();
@@ -336,17 +339,19 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
       {/* Icon + Title */}
       <div>
         <Popover open={iconPickerOpen} onOpenChange={setIconPickerOpen}>
-          <PopoverTrigger
-            render={
-              <button
-                type="button"
-                className="text-display-sm cursor-pointer rounded-lg p-1 -ml-1 hover:bg-accent/60 transition-colors"
-                title={t(($) => $.detail.icon_tooltip)}
-              >
-                {project.icon || "📁"}
-              </button>
-            }
-          />
+          <TooltipHint label={t(($) => $.detail.icon_tooltip)}>
+            <PopoverTrigger
+              render={
+                <button
+                  type="button"
+                  className="text-display-sm cursor-pointer rounded-lg p-1 -ml-1 hover:bg-accent/60 transition-colors"
+                  aria-label={t(($) => $.detail.icon_tooltip)}
+                >
+                  {project.icon || "📁"}
+                </button>
+              }
+            />
+          </TooltipHint>
           <PopoverContent align="start" className="w-auto p-0">
             <EmojiPicker
               onSelect={(emoji) => {
@@ -617,11 +622,10 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
             actions={
               <>
               <ProjectWorkflowMenu project={project} />
-              <Button
-                variant="ghost"
-                size="icon-sm"
+              <IconButton
+                label={isPinned ? t(($) => $.detail.unpin_tooltip) : t(($) => $.detail.pin_tooltip)}
+                tooltipSide="bottom"
                 className={cn("text-muted-foreground", isPinned && "text-foreground")}
-                title={isPinned ? t(($) => $.detail.unpin_tooltip) : t(($) => $.detail.pin_tooltip)}
                 onClick={() => {
                   if (isPinned) {
                     deletePinMut.mutate({ itemType: "project", itemId: projectId });
@@ -631,13 +635,17 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
                 }}
               >
                 {isPinned ? <PinOff /> : <Pin />}
-              </Button>
+              </IconButton>
               <DropdownMenu>
                 <DropdownMenuTrigger
                   render={
-                    <Button variant="ghost" size="icon-sm" className="text-muted-foreground">
+                    <IconButton
+                      label={tCommon(($) => $.more_actions)}
+                      tooltipSide="bottom"
+                      className="text-muted-foreground"
+                    >
                       <MoreHorizontal />
-                    </Button>
+                    </IconButton>
                   }
                 />
                 <DropdownMenuContent align="end" className="w-auto">
