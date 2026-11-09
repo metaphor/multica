@@ -6,11 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/mattn/go-shellwords"
 )
 
 // kiroReaderDrainGrace bounds how long the turn waits for trailing ACP
@@ -130,7 +133,13 @@ func (b *kiroBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 	timeout := opts.Timeout
 	runCtx, cancel := runContext(ctx, timeout)
 
-	kiroArgs := append([]string{"acp", "--trust-all-tools"}, filterCustomArgs(opts.CustomArgs, kiroBlockedArgs, b.cfg.Logger)...)
+	blockedArgs := kiroBlockedArgs
+	if opts.ThinkingLevel != "" {
+		// Preserve custom effort unless a structured override takes precedence.
+		blockedArgs = maps.Clone(kiroBlockedArgs)
+		blockedArgs["--effort"] = blockedWithValue
+	}
+	kiroArgs := append([]string{"acp", "--trust-all-tools"}, filterCustomArgs(opts.CustomArgs, blockedArgs, b.cfg.Logger)...)
 	cmd := b.cfg.commandAt(execPath).exec(runCtx, kiroArgs...)
 	hideAgentWindow(cmd)
 	b.cfg.logAgentCommand(cmd, newAgentCommandLogArgs(kiroArgs, trustAgentCommandPositional(0, "acp")))
@@ -165,7 +174,10 @@ func (b *kiroBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 		return nil, fmt.Errorf("start kiro: %w", err)
 	}
 
-	stderrSink := io.MultiWriter(newLogWriter(b.cfg.Logger, "[kiro:stderr] "), providerErr)
+	// Live panic watch: Kiro can panic inside its agent loop while the ACP
+	// process stays up, so session/prompt would never answer (MUL-8188).
+	runtimePanic := newACPRuntimePanicDetector()
+	stderrSink := io.MultiWriter(newLogWriter(b.cfg.Logger, "[kiro:stderr] "), providerErr, runtimePanic)
 	stderrDone := make(chan struct{})
 	go func() {
 		defer close(stderrDone)
@@ -182,6 +194,10 @@ func (b *kiroBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 	// for Result.Output while retaining the full text for error detection.
 	var deliverable acpDeliverableTracker
 	var streamingCurrentTurn atomic.Bool
+	// turnProducedMessage records whether the current prompt emitted any agent
+	// message before a runtime panic; a resumed session that panics before its
+	// first message is one the runtime cannot drive (MUL-8188).
+	var turnProducedMessage atomic.Bool
 	// Completion-preservation state for the -32603 close-handshake guard.
 	//
 	// Kiro raises `session/prompt -32603 "failed to generate a response"`
@@ -258,6 +274,7 @@ func (b *kiroBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 				}
 			}
 			deliverable.observe(msg)
+			turnProducedMessage.Store(true)
 			trySend(msgCh, msg)
 		},
 		onPromptDone: func(result hermesPromptResult) {
@@ -305,6 +322,8 @@ func (b *kiroBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 		// resume. Only that is curable by starting a fresh session, so
 		// handshake/network failures below must leave it false.
 		var resumeRejected bool
+		// Set when the live panic detector aborted session/prompt.
+		var runtimePanicked bool
 		effectiveModel := strings.TrimSpace(opts.Model)
 
 		initResult, err := c.request(runCtx, "initialize", map[string]any{
@@ -398,14 +417,20 @@ func (b *kiroBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 		supplements.mu.Unlock()
 		b.cfg.Logger.Info("kiro session created", "session_id", sessionID)
 
-		if opts.Model != "" {
+		modelToSet := opts.Model
+		// Kiro 2.34 can return a default model before loading its reasoning
+		// schema. Selecting that same model initializes effort support.
+		if modelToSet == "" && opts.ThinkingLevel != "" {
+			modelToSet = effectiveModel
+		}
+		if modelToSet != "" {
 			if _, err := c.request(runCtx, "session/set_model", map[string]any{
 				"sessionId": sessionID,
-				"modelId":   opts.Model,
+				"modelId":   modelToSet,
 			}); err != nil {
-				b.cfg.Logger.Warn("kiro set_session_model failed", "error", err, "requested_model", opts.Model)
+				b.cfg.Logger.Warn("kiro set_session_model failed", "error", err, "requested_model", modelToSet)
 				finalStatus = "failed"
-				finalError = fmt.Sprintf("kiro could not switch to model %q: %v", opts.Model, err)
+				finalError = fmt.Sprintf("kiro could not switch to model %q: %v", modelToSet, err)
 				if setupFailureWithholdsSessionID(opts) {
 					sessionID = ""
 				} else if isACPSessionNotFound(err) {
@@ -429,8 +454,10 @@ func (b *kiroBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 				}
 				return
 			}
-			b.cfg.Logger.Info("kiro session model set", "model", opts.Model)
+			b.cfg.Logger.Info("kiro session model set", "model", modelToSet)
 		}
+
+		applyKiroEffort(runCtx, c.request, b.cfg.Logger, sessionID, opts.ThinkingLevel)
 
 		userText := prompt
 		if opts.SystemPrompt != "" {
@@ -445,10 +472,23 @@ func (b *kiroBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 		// shape can drive the turn.
 		// TODO: drop one field once Kiro lands on a single canonical payload.
 		streamingCurrentTurn.Store(true)
+		// promptCtx lets a live runtime panic abort the in-flight prompt.
+		// Without it a Kiro that panicked in its agent loop but kept the ACP
+		// process alive leaves session/prompt waiting until the task timeout
+		// or the idle watchdog (MUL-8188).
+		promptCtx, promptCancel := context.WithCancel(runCtx)
+		go func() {
+			select {
+			case <-runtimePanic.Detected():
+				b.cfg.Logger.Warn("kiro runtime panicked mid-turn; aborting the prompt", "pid", cmd.Process.Pid, "session_id", sessionID)
+				promptCancel()
+			case <-promptCtx.Done():
+			}
+		}()
 		// Steering opens only once the prompt is on the wire and closes as
 		// soon as it answers, so a supplement can never target setup or a
 		// finished turn.
-		_, err = c.requestAndNotifySent(runCtx, "session/prompt", map[string]any{
+		_, err = c.requestAndNotifySent(promptCtx, "session/prompt", map[string]any{
 			"sessionId": sessionID,
 			"content":   promptBlocks,
 			"prompt":    promptBlocks,
@@ -457,8 +497,17 @@ func (b *kiroBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 				supplements.active.Store(true)
 			}
 		})
+		promptCancel()
 		supplements.stop()
-		if err != nil {
+		if err != nil && runtimePanic.Fired() && runCtx.Err() == nil {
+			// Checked before the ctx classifiers: promptCtx was cancelled by
+			// the panic, not by the task. The panic may also have taken the
+			// process down ("kiro process exited"); either way the panic is
+			// the real cause. Error text and resume classification are
+			// settled after stderr drains (see below).
+			finalStatus = "failed"
+			runtimePanicked = true
+		} else if err != nil {
 			if runCtx.Err() == context.DeadlineExceeded {
 				finalStatus = "timeout"
 				finalError = fmt.Sprintf("kiro timed out after %s", timeout)
@@ -531,6 +580,20 @@ func (b *kiroBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 		duration := time.Since(startTime)
 		b.cfg.Logger.Info("kiro finished", "pid", cmd.Process.Pid, "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 
+		// Detecting the header cancels the RPC, not the panic reporter. Give
+		// trailing Message/Location writes a bounded chance to reach stderr
+		// before closing stdin or killing the process. A live or silent panic
+		// may never close stderr; task cancellation must still interrupt this.
+		if runtimePanic.Fired() && runCtx.Err() == nil {
+			drainTimer := time.NewTimer(kiroReaderDrainGrace)
+			select {
+			case <-stderrDone:
+			case <-runCtx.Done():
+			case <-drainTimer.C:
+			}
+			drainTimer.Stop()
+		}
+
 		stdin.Close()
 		cancel()
 
@@ -539,6 +602,26 @@ func (b *kiroBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 		// provider-error sniffer; see hermes.go for the failure mode.
 		<-stderrDone
 
+		// A runtime panic during the prompt is the real failure, whichever
+		// path noticed it first: the live detector aborting the prompt, or
+		// the process dying and closing stdout before stderr was read. The
+		// Message/Location lines trail the header, so the text is only
+		// complete now that stderr has drained.
+		if runtimePanic.Fired() && (runtimePanicked || finalStatus == "failed") {
+			finalStatus = "failed"
+			finalError = "kiro runtime panicked: " + runtimePanic.Detail()
+			if opts.ResumeSessionID != "" && !turnProducedMessage.Load() {
+				// The resumed session loaded but the runtime crashed before
+				// the turn produced anything: this session cannot be driven,
+				// so let the daemon retry once from a fresh session and
+				// retire it. A panic after the turn made progress is not
+				// evidence against the session, so it stays resumable.
+				b.cfg.Logger.Warn("resumed kiro session panicked before its first message; signaling resume rejection so the daemon retries with a fresh session",
+					"session_id", sessionID,
+				)
+				resumeRejected = true
+			}
+		}
 		finalOutput, providerErrorOutput := deliverable.result()
 
 		// Promote completed→failed when stderr or the agent text
@@ -638,22 +721,43 @@ func isKiroIssueCommentAddTool(msg Message) bool {
 }
 
 func isKiroIssueCommentAddCommand(command string) bool {
-	parts := trimLeadingEnvAssignments(strings.Fields(command))
+	parts := kiroCommandWords(command)
 	// Some runtimes route terminal calls through a shell wrapper such as
 	// `sh -c "multica issue comment add ..."`; unwrap a single such layer so
 	// the real invocation is still recognized.
 	if len(parts) >= 3 && isPOSIXShellName(parts[0]) && parts[1] == "-c" {
-		inner := strings.Trim(strings.Join(parts[2:], " "), "\"'")
-		parts = trimLeadingEnvAssignments(strings.Fields(inner))
+		parts = kiroCommandWords(parts[2])
 	}
 	if len(parts) < 4 {
 		return false
 	}
-	executable := strings.TrimPrefix(parts[0], "./")
-	if executable != "multica" && !strings.HasSuffix(executable, "/multica") {
-		return false
+	executable := strings.ReplaceAll(strings.TrimPrefix(parts[0], "./"), `\`, "/")
+	switch executable {
+	case "$MULTICA_CLI_PATH", "${MULTICA_CLI_PATH}", "$env:MULTICA_CLI_PATH", "${env:MULTICA_CLI_PATH}":
+	case "multica", "multica.exe":
+	default:
+		if !strings.HasSuffix(executable, "/multica") && !strings.HasSuffix(executable, "/multica.exe") {
+			return false
+		}
 	}
 	return parts[1] == "issue" && parts[2] == "comment" && parts[3] == "add"
+}
+
+func kiroCommandWords(command string) []string {
+	command = strings.TrimSpace(command)
+	if after, ok := strings.CutPrefix(command, "&"); ok {
+		// PowerShell uses & to invoke a quoted executable and treats
+		// backslashes as literal path separators, not POSIX escapes.
+		command = strings.ReplaceAll(strings.TrimSpace(after), `\`, `\\`)
+	}
+	// Parse syntax only; never expand environment variables or execute
+	// command substitutions from the tool payload.
+	parser := shellwords.Parser{}
+	parts, err := parser.Parse(command)
+	if err != nil {
+		return nil
+	}
+	return trimLeadingEnvAssignments(parts)
 }
 
 // trimLeadingEnvAssignments drops leading `KEY=VALUE` tokens so an invocation

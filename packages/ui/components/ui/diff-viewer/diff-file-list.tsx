@@ -1,4 +1,4 @@
-import { ChevronDown } from "lucide-react"
+import { ChevronDown } from "@multica/ui/icons"
 
 import { Badge } from "@multica/ui/components/ui/badge"
 import {

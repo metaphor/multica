@@ -13,6 +13,9 @@ export interface Project {
   priority: ProjectPriority;
   lead_type: "member" | "agent" | null;
   lead_id: string | null;
+  // Older backends omit these; null means the creator is unknown.
+  creator_type?: "member" | "agent" | null;
+  creator_id?: string | null;
   // Calendar days ("YYYY-MM-DD"), no time-of-day or timezone — same contract as
   // issue.start_date / issue.due_date.
   start_date: string | null;
@@ -22,7 +25,7 @@ export interface Project {
   issue_count: number;
   done_count: number;
   resource_count: number;
-  settings?: Record<string, unknown>;
+  settings?: Record<string, unknown> | null;
   /**
    * The workflow this project uses; null for the workspace Default workflow.
    * Optional because older servers do not send it. (MUL-7420)

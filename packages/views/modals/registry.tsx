@@ -9,6 +9,7 @@ import { FeedbackModal } from "./feedback";
 import { SetParentIssueModal } from "./set-parent-issue";
 import { MarkDuplicateIssueModal } from "./mark-duplicate-issue";
 import { AddChildIssueModal } from "./add-child-issue";
+import { AddProjectIssueModal } from "./add-project-issue";
 import { RenameIssueModal } from "./rename-issue";
 import { DeleteIssueConfirmModal } from "./delete-issue-confirm";
 import { MergeRequestDiffModal } from "../issues/components/merge-request-diff-modal";
@@ -60,6 +61,9 @@ export function ModalRegistry() {
       break;
     case "issue-add-child":
       activeModal = <AddChildIssueModal onClose={close} data={data} />;
+      break;
+    case "project-add-issue":
+      activeModal = <AddProjectIssueModal onClose={close} data={data} />;
       break;
     case "issue-rename":
       activeModal = <RenameIssueModal onClose={close} data={data} />;
