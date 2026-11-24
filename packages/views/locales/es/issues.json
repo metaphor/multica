@@ -513,6 +513,7 @@
     "pull_request_card_files_count_other": "{{count}} archivos",
     "pull_request_card_show_more": "Mostrar {{count}} más",
     "pull_request_card_show_less": "Mostrar menos",
+    "open_merge_request_external": "Abrir el merge request en GitLab",
     "prop_status": "Estado",
     "prop_priority": "Prioridad",
     "prop_stage": "Etapa",

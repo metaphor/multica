@@ -719,7 +719,7 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 		}()
 	}
 
-	preparedSkillNames, err := writeContextFiles(contextTarget, params.Provider, params.Task, manifest)
+	preparedSkillNames, err := writeContextFilesTracked(contextTarget, params.Provider, params.Task, manifest, env.SkillDirectories)
 	if err != nil {
 		return nil, fmt.Errorf("execenv: write context files: %w", err)
 	}
@@ -823,8 +823,7 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 	// into managed-MCP runs. Without managed MCP the task runs on the user's
 	// data dir, and only its MCP login is copied there.
 	if params.Provider == "cursor" {
-		cursorDataDir, err := prepareCursorMcpConfig(envRoot, contextTarget, params.McpConfig, params.CursorMcpAuthSource, manifest)
-		if err != nil {
+		if err := prepareCursorMcp(env, envRoot, contextTarget, params.McpConfig, params.CursorMcpAuthSource, params.CursorMcpAuthStore, params.CursorUserDataDir, manifest, logger); err != nil {
 			return nil, fmt.Errorf("execenv: prepare cursor mcp config: %w", err)
 		}
 	}
@@ -975,11 +974,12 @@ func Reuse(params ReuseParams, logger *slog.Logger) *Environment {
 		rootDir = ""
 	}
 	env := &Environment{
-		RootDir:        rootDir,
-		WorkDir:        params.WorkDir,
-		Cwd:            params.WorkDir,
-		LocalDirectory: params.LocalDirectory,
-		logger:         logger,
+		SkillDirectories: make(map[string]string),
+		RootDir:          rootDir,
+		WorkDir:          params.WorkDir,
+		Cwd:              params.WorkDir,
+		LocalDirectory:   params.LocalDirectory,
+		logger:           logger,
 	}
 	if env.RootDir != "" {
 		env.MulticaConfigRoot = filepath.Join(env.RootDir, "multica-config")

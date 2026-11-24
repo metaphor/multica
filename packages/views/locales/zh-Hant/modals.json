@@ -283,5 +283,14 @@
     "no_labels": "無標籤",
     "manual_only": "標籤、開始日期和自訂屬性僅用於手動建立。",
     "apply_other": "複製所選 {{count}} 項"
+  },
+  "merge_request_diff": {
+    "title": "{{title}}",
+    "loading": "正在載入 diff...",
+    "empty": "此合併請求中沒有變更的檔案。",
+    "error_409": "此合併請求早於連線追蹤功能——請重新連線，或等待下一次 webhook 同步。",
+    "error_400": "Diff 檢視目前僅支援 GitLab。",
+    "error_generic": "無法載入 diff。",
+    "retry": "重試"
   }
 }

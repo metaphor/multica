@@ -286,5 +286,14 @@
     "manual_only": "Las etiquetas, la fecha de inicio y las propiedades personalizadas solo se aplican a la creación manual.",
     "apply_one": "Copiar {{count}} campo",
     "apply_other": "Copiar {{count}} campos"
+  },
+  "merge_request_diff": {
+    "title": "{{title}}",
+    "loading": "Cargando diff...",
+    "empty": "No hay archivos modificados en este merge request.",
+    "error_409": "Este merge request es anterior al seguimiento de conexiones: vuelve a conectar o espera a la próxima sincronización del webhook.",
+    "error_400": "La visualización del diff es solo para GitLab por ahora.",
+    "error_generic": "No se pudo cargar el diff.",
+    "retry": "Reintentar"
   }
 }

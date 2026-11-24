@@ -275,6 +275,11 @@ type UpdateProjectRequest struct {
 	StartDate   *string `json:"start_date"`
 	DueDate     *string `json:"due_date"`
 	Settings    any     `json:"settings"`
+	// Visibility switches between "workspace" and "private" (MUL-8472).
+	// MemberIDs adds project members to a project that is or becomes
+	// "private"; see prepareProjectAccessUpdate.
+	Visibility *string  `json:"visibility"`
+	MemberIDs  []string `json:"member_ids,omitempty"`
 }
 
 func (h *Handler) ListProjects(w http.ResponseWriter, r *http.Request) {
@@ -873,9 +878,16 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 			params.Settings = []byte("{}")
 		}
 	}
-	project, err := h.Queries.UpdateProject(r.Context(), params)
-	if err != nil {
-		h.writeProjectWriteError(w, r, err, "update")
+	newLeadType, newLeadID := prevProject.LeadType, prevProject.LeadID
+	if params.LeadTypeSet {
+		newLeadType = params.LeadType
+	}
+	if params.LeadIDSet {
+		newLeadID = params.LeadID
+	}
+	leadChanged := newLeadType != prevProject.LeadType || newLeadID != prevProject.LeadID
+	access, ok := h.prepareProjectAccessUpdate(w, r, prevProject, req.Visibility, req.MemberIDs, newLeadType, newLeadID, leadChanged)
+	if !ok {
 		return
 	}
 	var admission featureAdmission

@@ -534,6 +534,7 @@
     "pull_request_card_files_count_other": "{{count}} 個檔案",
     "pull_request_card_show_more": "顯示其餘 {{count}} 條",
     "pull_request_card_show_less": "收起",
+    "open_merge_request_external": "在 GitLab 中開啟合併請求",
     "prop_status": "狀態",
     "prop_priority": "優先順序",
     "prop_stage": "階段",

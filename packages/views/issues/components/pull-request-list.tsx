@@ -109,7 +109,15 @@ export function PullRequestList({
   return (
     <div className="space-y-1">
       {expandedHead.map((pr) => (
-        <PullRequestRow key={pr.id} pr={pr} identifier={identifier} showRepo={showRepo} actions={rowActions} issueId={issueId} />
+        <PullRequestRow
+          key={pr.id}
+          pr={pr}
+          identifier={identifier}
+          showRepo={showRepo}
+          actions={rowActions}
+          issueId={issueId}
+          mergeTarget={inlineWaiting && autoComplete ? mergeTarget(autoComplete) : undefined}
+        />
       ))}
       {useCollapse ? (
         <div className="space-y-1">
@@ -401,6 +409,7 @@ function PullRequestRow({
   showRepo,
   actions,
   issueId,
+  mergeTarget: onMergeTarget,
 }: {
   pr: GitHubPullRequest;
   identifier: string;
@@ -408,6 +417,8 @@ function PullRequestRow({
   actions: RowActions | null;
   /** Opens the in-app merge request diff viewer for GitLab rows. */
   issueId: string;
+  /** The status merging this PR moves the issue to, said on the row's last line. */
+  mergeTarget?: string;
 }) {
   const { t } = useT("issues");
   const timeAgo = useTimeAgo();
@@ -448,13 +459,6 @@ function PullRequestRow({
         <span className="truncate">{timeAgo(pr.snapshot_fetched_at)}</span>
       </span>
     );
-  } else if (showStats && !isGitLab) {
-    meta = (
-      <span>
-        <span className="text-emerald-600 dark:text-emerald-400">+{formatPullRequestDiffCount(pr.additions ?? 0)}</span>{" "}
-        <span className="text-rose-600 dark:text-rose-400">−{formatPullRequestDiffCount(pr.deletions ?? 0)}</span>
-      </span>
-    );
   }
 
   // The row link and its menu are siblings: a button inside an anchor is
@@ -490,7 +494,7 @@ function PullRequestRow({
                     {showRepo ? <span className="min-w-0 truncate">{pr.repo_name}</span> : null}
                     <span className="shrink-0">#{pr.number}</span>
                   </span>
-                  {showStats ? (
+                  {showStats && !isGitLab ? (
                     <span data-testid="pull-request-diff" className="inline-flex shrink-0 items-center gap-1.5">
                       <span aria-hidden="true" className="text-faint-foreground">
                         ·

@@ -558,6 +558,7 @@
     "pull_request_card_files_count_other": "{{count}} файла",
     "pull_request_card_show_more": "Показать ещё: {{count}}",
     "pull_request_card_show_less": "Показать меньше",
+    "open_merge_request_external": "Открыть merge request в GitLab",
     "prop_status": "Статус",
     "prop_priority": "Приоритет",
     "prop_stage": "Этап",

@@ -8,6 +8,7 @@ export const githubKeys = {
   repositories: (wsId: string, installationId: string) =>
     [...githubKeys.all(wsId), "installations", installationId, "repositories"] as const,
   pullRequests: (issueId: string) => ["github", "pull-requests", issueId] as const,
+  pullRequestSummaries: (wsId: string) => ["github", "pull-requests", "summaries", wsId] as const,
   mergeRequestDiffs: (issueId: string, prId: string) =>
     ["merge-request-diffs", issueId, prId] as const,
 };

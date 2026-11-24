@@ -9545,7 +9545,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	execOpts := agent.ExecOptions{
 		SkillInvocation:            skillInvocation,
 		EnableTaskSupplement:       taskSupplementNegotiated,
-		CursorHookCommand:          cursorHookCommand,
+		SupplementHookCommand:      supplementHookCommand,
 		Cwd:                        execCwd,
 		PiSkillPaths:               env.PiSkillPaths,
 		Model:                      model,

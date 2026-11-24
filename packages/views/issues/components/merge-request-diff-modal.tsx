@@ -21,10 +21,14 @@ interface MergeRequestDiffData {
 }
 
 export function MergeRequestDiffModal({
+  open = true,
   onClose,
+  onOpenChangeComplete,
   data,
 }: {
+  open?: boolean;
   onClose: () => void;
+  onOpenChangeComplete?: (open: boolean) => void;
   data: Record<string, unknown> | null;
 }) {
   const { t } = useT("modals");
@@ -42,7 +46,7 @@ export function MergeRequestDiffModal({
   const errorMessage = getErrorMessage(error, t);
 
   return (
-    <Dialog open onOpenChange={(v) => { if (!v) onClose(); }}>
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }} onOpenChangeComplete={onOpenChangeComplete}>
       <DialogContent
         showCloseButton
         className="p-0 gap-0 flex flex-col overflow-hidden !top-1/2 !left-1/2 !-translate-x-1/2 !-translate-y-1/2 !max-w-4xl !w-full !h-5/6"

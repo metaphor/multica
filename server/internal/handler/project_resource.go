@@ -968,6 +968,7 @@ type claimProjectContext struct {
 	ProjectID          string
 	Title              string
 	Description        string
+	Archived           bool
 	Resources          []ProjectResourceData
 	Repos              []RepoData
 	EnableAgentWorkdir bool

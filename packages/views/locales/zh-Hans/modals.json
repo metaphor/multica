@@ -168,7 +168,7 @@
   },
   "merge_request_diff": {
     "title": "{{title}}",
-    "loading": "正在加载 diff…",
+    "loading": "正在加载 diff...",
     "empty": "此合并请求中没有变更文件。",
     "error_409": "此合并请求早于连接跟踪功能——请重新连接，或等待下一次 webhook 同步。",
     "error_400": "Diff 查看目前仅支持 GitLab。",

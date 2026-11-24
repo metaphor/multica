@@ -1787,6 +1787,7 @@ type Project struct {
 	ArchivedByType pgtype.Text        `json:"archived_by_type"`
 	ArchivedByID   pgtype.UUID        `json:"archived_by_id"`
 	FolderID       pgtype.UUID        `json:"folder_id"`
+	Settings       []byte             `json:"settings"`
 }
 
 type ProjectFolder struct {
@@ -1795,7 +1796,16 @@ type ProjectFolder struct {
 	Name        string             `json:"name"`
 	CreatorType pgtype.Text        `json:"creator_type"`
 	CreatorID   pgtype.UUID        `json:"creator_id"`
-	Settings    []byte             `json:"settings"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
+type ProjectMember struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	ProjectID   pgtype.UUID        `json:"project_id"`
+	UserID      pgtype.UUID        `json:"user_id"`
+	AddedBy     pgtype.UUID        `json:"added_by"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 type ProjectResource struct {

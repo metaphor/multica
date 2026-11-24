@@ -278,8 +278,9 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-function renderProjectDetail(settings: Record<string, unknown> = {}) {
-  PROJECT.settings = settings;
+function renderProjectDetail(searchOrSettings: string | Record<string, unknown> = {}) {
+  const search = typeof searchOrSettings === "string" ? searchOrSettings : "";
+  PROJECT.settings = typeof searchOrSettings === "string" ? {} : searchOrSettings;
   qc.setQueryData(["members"], [{ user_id: "user-1", name: "User One", role: mocks.role }]);
   const adapter: NavigationAdapter = {
     push: mocks.push,
@@ -313,7 +314,8 @@ beforeEach(() => {
   mocks.deleteProject.mockReset().mockReturnValue(pending.promise);
   mocks.updateProject.mockReset();
   mocks.getProject.mockReset().mockResolvedValue(PROJECT);
-  setApiInstance({ deleteProject: mocks.deleteProject, getProject: mocks.getProject, updateProject: mocks.updateProject } as unknown as ApiClient);
+  mocks.setProjectSubscription.mockReset().mockImplementation(async (_id: string, subscribed: boolean) => subscribed);
+  setApiInstance({ deleteProject: mocks.deleteProject, getProject: mocks.getProject, updateProject: mocks.updateProject, setProjectSubscription: mocks.setProjectSubscription } as unknown as ApiClient);
   mocks.getShareableUrl.mockClear();
   mocks.push.mockReset();
   mocks.replace.mockReset();

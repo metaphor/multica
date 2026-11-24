@@ -1,8 +1,10 @@
 "use client";
 
-import type { ReactNode } from "react";
-import { Check, Lock } from "@multica/ui/icons";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { Check, ChevronRight, Lock } from "@multica/ui/icons";
 import { cn } from "@multica/ui/lib/utils";
+import { Input } from "@multica/ui/components/ui/input";
+import { Switch } from "@multica/ui/components/ui/switch";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -57,6 +59,78 @@ export function ProjectPropertiesPanel({
     ) : (
       control
     );
+
+  const enableAgentWorkdir = Boolean(project.settings?.enable_agent_workdir);
+  const agentWorkdir = typeof project.settings?.agent_workdir === "string" ? project.settings.agent_workdir : "";
+
+  const [runtimeOpen, setRuntimeOpen] = useState(true);
+  const [agentWorkdirDraft, setAgentWorkdirDraft] = useState("");
+  const [agentWorkdirError, setAgentWorkdirError] = useState<string | null>(null);
+  const [enableAgentWorkdirOpen, setEnableAgentWorkdirOpen] = useState(enableAgentWorkdir);
+
+  useEffect(() => {
+    setEnableAgentWorkdirOpen(enableAgentWorkdir);
+  }, [enableAgentWorkdir]);
+
+  useEffect(() => {
+    setAgentWorkdirDraft(agentWorkdir);
+    setAgentWorkdirError(null);
+  }, [agentWorkdir, project.id]);
+
+  const validateAgentWorkdir = useCallback((value: string): string | null => {
+    const trimmed = value.trim();
+    if (!trimmed) return t(($) => $.detail.agent_workdir_error);
+    if (trimmed.startsWith("/")) return t(($) => $.detail.agent_workdir_error);
+    if (trimmed.split(/[/\\]/).some((segment) => segment === "..")) return t(($) => $.detail.agent_workdir_error);
+    return null;
+  }, [t]);
+
+  const handleAgentWorkdirBlur = useCallback(() => {
+    const trimmed = agentWorkdirDraft.trim();
+    const error = validateAgentWorkdir(trimmed);
+    if (error) {
+      setAgentWorkdirError(error);
+      return;
+    }
+    setAgentWorkdirError(null);
+    if (!enableAgentWorkdirOpen) return;
+    onUpdate({
+      settings: {
+        ...project.settings,
+        enable_agent_workdir: true,
+        agent_workdir: trimmed,
+      },
+    });
+  }, [agentWorkdirDraft, enableAgentWorkdirOpen, project.settings, onUpdate, validateAgentWorkdir]);
+
+  const handleToggleAgentWorkdir = useCallback((checked: boolean) => {
+    setEnableAgentWorkdirOpen(checked);
+    if (checked) {
+      const trimmed = agentWorkdirDraft.trim();
+      const error = validateAgentWorkdir(trimmed);
+      if (error) {
+        setAgentWorkdirError(error);
+        return;
+      }
+      setAgentWorkdirError(null);
+      onUpdate({
+        settings: {
+          ...project.settings,
+          enable_agent_workdir: true,
+          agent_workdir: trimmed,
+        },
+      });
+    } else {
+      setAgentWorkdirError(null);
+      onUpdate({
+        settings: {
+          ...project.settings,
+          enable_agent_workdir: false,
+          agent_workdir: agentWorkdirDraft.trim(),
+        },
+      });
+    }
+  }, [agentWorkdirDraft, project.settings, onUpdate, validateAgentWorkdir]);
 
   return (
     <div data-testid="project-properties">
@@ -155,6 +229,51 @@ export function ProjectPropertiesPanel({
           <p className="pt-2 text-caption text-muted-foreground">{t(($) => $.detail.guest_readonly_note)}</p>
         )}
       </ObjectPanelSection>
+
+      {/* Runtime */}
+      {!readOnly && (
+        <div>
+          <button
+            type="button"
+            className={`flex w-full items-center gap-1 rounded-md px-2 py-1 text-caption font-medium transition-colors mb-2 hover:bg-accent/70 ${runtimeOpen ? "" : "text-muted-foreground hover:text-foreground"}`}
+            onClick={() => setRuntimeOpen(!runtimeOpen)}
+          >
+            {t(($) => $.detail.section_runtime)}
+            <ChevronRight className={`!size-3 shrink-0 stroke-[2.5] text-muted-foreground transition-transform ${runtimeOpen ? "rotate-90" : ""}`} />
+          </button>
+          {runtimeOpen && (
+            <div className="pl-2 space-y-2">
+              <label className="flex cursor-pointer items-center justify-between gap-2 rounded-md px-2 -mx-2 py-1.5 hover:bg-accent/50 transition-colors">
+                <span className="text-caption">{t(($) => $.detail.agent_workdir_toggle)}</span>
+                <Switch
+                  checked={enableAgentWorkdirOpen}
+                  onCheckedChange={handleToggleAgentWorkdir}
+                  size="sm"
+                  aria-label={t(($) => $.detail.agent_workdir_toggle)}
+                />
+              </label>
+              {enableAgentWorkdirOpen && (
+                <div className="space-y-1">
+                  <Input
+                    value={agentWorkdirDraft}
+                    onChange={(e) => {
+                      setAgentWorkdirDraft(e.target.value);
+                      if (agentWorkdirError) setAgentWorkdirError(null);
+                    }}
+                    onBlur={handleAgentWorkdirBlur}
+                    placeholder={t(($) => $.detail.agent_workdir_placeholder)}
+                    aria-invalid={!!agentWorkdirError}
+                    aria-label={t(($) => $.detail.agent_workdir_placeholder)}
+                  />
+                  {agentWorkdirError && (
+                    <p className="text-caption text-destructive">{agentWorkdirError}</p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

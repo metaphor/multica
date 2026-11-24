@@ -1158,6 +1158,8 @@ func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
 	switch kind {
 	case kindChat:
 		writeWorkflowChat(&b, ctx)
+	case kindDocComment:
+		writeWorkflowDocComment(&b)
 	case kindQuickCreate:
 		writeWorkflowQuickCreate(&b)
 	case kindAutopilotRunOnly:

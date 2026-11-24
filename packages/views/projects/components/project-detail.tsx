@@ -42,9 +42,6 @@ import { ProjectWorkflowMenuItem, ProjectWorkflowSheet } from "../../workflows/p
 import { IssueSurface } from "../../issues/surface/issue-surface";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Button, buttonVariants } from "@multica/ui/components/ui/button";
-import { Input } from "@multica/ui/components/ui/input";
-import { Switch } from "@multica/ui/components/ui/switch";
-import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@multica/ui/components/ui/resizable";
 import { Sheet, SheetContent } from "@multica/ui/components/ui/sheet";
 import { useIsMobile } from "@multica/ui/hooks/use-mobile";
@@ -323,10 +320,6 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
     [projectId, rememberTab, router],
   );
 
-  const [runtimeOpen, setRuntimeOpen] = useState(true);
-  const [agentWorkdirDraft, setAgentWorkdirDraft] = useState("");
-  const [agentWorkdirError, setAgentWorkdirError] = useState<string | null>(null);
-
   // Sidebar panel
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
     id: PROJECT_DETAIL_LAYOUT_ID,
@@ -442,76 +435,6 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
     });
   }, [project, deleteProject, router, wsPaths, t]);
 
-  const enableAgentWorkdir = Boolean(project?.settings?.enable_agent_workdir);
-  const agentWorkdir = typeof project?.settings?.agent_workdir === "string" ? project.settings.agent_workdir : "";
-
-  const [enableAgentWorkdirOpen, setEnableAgentWorkdirOpen] = useState(enableAgentWorkdir);
-
-  useEffect(() => {
-    setEnableAgentWorkdirOpen(enableAgentWorkdir);
-  }, [enableAgentWorkdir]);
-
-  useEffect(() => {
-    if (!project) return;
-    setAgentWorkdirDraft(agentWorkdir);
-    setAgentWorkdirError(null);
-  }, [agentWorkdir, project?.id]);
-
-  const validateAgentWorkdir = useCallback((value: string): string | null => {
-    const trimmed = value.trim();
-    if (!trimmed) return t(($) => $.detail.agent_workdir_error);
-    if (trimmed.startsWith("/")) return t(($) => $.detail.agent_workdir_error);
-    if (trimmed.split(/[/\\]/).some((segment) => segment === "..")) return t(($) => $.detail.agent_workdir_error);
-    return null;
-  }, [t]);
-
-  const handleAgentWorkdirBlur = useCallback(() => {
-    const trimmed = agentWorkdirDraft.trim();
-    const error = validateAgentWorkdir(trimmed);
-    if (error) {
-      setAgentWorkdirError(error);
-      return;
-    }
-    setAgentWorkdirError(null);
-    if (!enableAgentWorkdirOpen) return;
-    handleUpdateField({
-      settings: {
-        ...project?.settings,
-        enable_agent_workdir: true,
-        agent_workdir: trimmed,
-      },
-    });
-  }, [agentWorkdirDraft, enableAgentWorkdirOpen, project?.settings, handleUpdateField, validateAgentWorkdir]);
-
-  const handleToggleAgentWorkdir = useCallback((checked: boolean) => {
-    setEnableAgentWorkdirOpen(checked);
-    if (checked) {
-      const trimmed = agentWorkdirDraft.trim();
-      const error = validateAgentWorkdir(trimmed);
-      if (error) {
-        setAgentWorkdirError(error);
-        return;
-      }
-      setAgentWorkdirError(null);
-      handleUpdateField({
-        settings: {
-          ...project?.settings,
-          enable_agent_workdir: true,
-          agent_workdir: trimmed,
-        },
-      });
-    } else {
-      setAgentWorkdirError(null);
-      handleUpdateField({
-        settings: {
-          ...project?.settings,
-          enable_agent_workdir: false,
-          agent_workdir: agentWorkdirDraft.trim(),
-        },
-      });
-    }
-  }, [agentWorkdirDraft, project?.settings, handleUpdateField, validateAgentWorkdir]);
-
   if (isLoading || deleted) {
     return <ProjectDetailSkeleton sidebar={!isMobile && desktopSidebarOpen} />;
   }
@@ -540,278 +463,22 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 
   const sidebarContent = (
     <div className="space-y-5">
-      {/* Icon + Title */}
-      <div>
-        <Popover open={iconPickerOpen} onOpenChange={setIconPickerOpen}>
-          <TooltipHint label={t(($) => $.detail.icon_tooltip)}>
-            <PopoverTrigger
-              render={
-                <button
-                  type="button"
-                  className="text-display-sm cursor-pointer rounded-lg p-1 -ml-1 hover:bg-accent/60 transition-colors"
-                  aria-label={t(($) => $.detail.icon_tooltip)}
-                >
-                  {project.icon || "📁"}
-                </button>
-              }
-            />
-          </TooltipHint>
-          <PopoverContent align="start" className="w-auto p-0">
-            <EmojiPicker
-              onSelect={(emoji) => {
-                handleUpdateField({ icon: emoji });
-                setIconPickerOpen(false);
-              }}
-            />
-          </PopoverContent>
-        </Popover>
-        <TitleEditor
-          key={`title-${projectId}`}
-          defaultValue={project.title}
-          placeholder={t(($) => $.detail.title_placeholder)}
-          className="mt-2 w-full text-title-sm font-semibold leading-snug tracking-tight"
-          onBlur={(value) => {
-            const trimmed = value.trim();
-            if (trimmed && trimmed !== project.title) handleUpdateField({ title: trimmed });
-          }}
-        />
-      </div>
-
-      {/* Properties */}
-      <div>
-        <button
-          type="button"
-          className={`flex w-full items-center gap-1 rounded-md px-2 py-1 text-caption font-medium transition-colors mb-2 hover:bg-accent/70 ${propertiesOpen ? "" : "text-muted-foreground hover:text-foreground"}`}
-          onClick={() => setPropertiesOpen(!propertiesOpen)}
-        >
-          {t(($) => $.detail.section_properties)}
-          <ChevronRight className={`!size-3 shrink-0 stroke-[2.5] text-muted-foreground transition-transform ${propertiesOpen ? "rotate-90" : ""}`} />
-        </button>
-        {propertiesOpen && <div className="space-y-0.5 pl-2">
-          <PropRow label={t(($) => $.table.status)}>
-            <DropdownMenu>
-              <DropdownMenuTrigger
-                render={
-                  <button type="button" className="inline-flex items-center gap-1.5 text-caption hover:text-foreground transition-colors">
-                    <span className={cn("size-2 rounded-full", statusCfg.dotColor)} />
-                    <span>{statusLabels[project.status]}</span>
-                  </button>
-                }
-              />
-              <DropdownMenuContent align="start" className="w-44">
-                {PROJECT_STATUS_ORDER.map((s) => (
-                  <DropdownMenuItem key={s} onClick={() => handleUpdateField({ status: s as ProjectStatus })}>
-                    <span className={cn("size-2 rounded-full", PROJECT_STATUS_CONFIG[s].dotColor)} />
-                    <span>{statusLabels[s]}</span>
-                    {s === project.status && <Check className="ml-auto h-3.5 w-3.5" />}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </PropRow>
-          <PropRow label={t(($) => $.table.priority)}>
-            <DropdownMenu>
-              <DropdownMenuTrigger
-                render={
-                  <button type="button" className="inline-flex items-center gap-1.5 text-caption hover:text-foreground transition-colors">
-                    <PriorityIcon priority={project.priority} />
-                    <span>{priorityLabels[project.priority]}</span>
-                  </button>
-                }
-              />
-              <DropdownMenuContent align="start" className="w-44">
-                {PROJECT_PRIORITY_ORDER.map((p) => (
-                  <DropdownMenuItem key={p} onClick={() => handleUpdateField({ priority: p as ProjectPriority })}>
-                    <PriorityIcon priority={p} />
-                    <span>{priorityLabels[p]}</span>
-                    {p === project.priority && <Check className="ml-auto h-3.5 w-3.5" />}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </PropRow>
-          <PropRow label={t(($) => $.table.lead)}>
-            <Popover open={leadOpen} onOpenChange={(v) => { setLeadOpen(v); if (!v) setLeadFilter(""); }}>
-              <PopoverTrigger
-                render={
-                  <button type="button" className="inline-flex items-center gap-1.5 text-caption hover:text-foreground transition-colors">
-                    {project.lead_type && project.lead_id ? (
-                      <>
-                        <ActorAvatar actorType={project.lead_type} actorId={project.lead_id} size="sm" enableHoverCard showStatusDot />
-                        <span className="cursor-pointer">{getActorName(project.lead_type, project.lead_id)}</span>
-                      </>
-                    ) : (
-                      <span className="text-muted-foreground">{t(($) => $.lead.no_lead)}</span>
-                    )}
-                  </button>
-                }
-              />
-              <PopoverContent align="start" className="w-52 p-0">
-                <div className="px-2 py-1.5 border-b">
-                  <input
-                    type="text"
-                    value={leadFilter}
-                    onChange={(e) => setLeadFilter(e.target.value)}
-                    placeholder={t(($) => $.lead.assign_placeholder)}
-                    className="w-full bg-transparent text-body placeholder:text-muted-foreground outline-none"
-                  />
-                </div>
-                <div className="p-1 max-h-60 overflow-y-auto">
-                  <button
-                    type="button"
-                    onClick={() => { handleUpdateField({ lead_type: null, lead_id: null }); setLeadOpen(false); }}
-                    className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-body hover:bg-accent transition-colors"
-                  >
-                    <UserMinus className="h-3.5 w-3.5 text-muted-foreground" />
-                    <span className="text-muted-foreground">{t(($) => $.lead.no_lead)}</span>
-                  </button>
-                  {filteredMembers.length > 0 && (
-                    <>
-                      <div className="px-2 pt-2 pb-1 text-caption font-medium text-muted-foreground uppercase tracking-wider">{t(($) => $.lead.members_group)}</div>
-                      {filteredMembers.map((m) => (
-                        <button
-                          type="button"
-                          key={m.user_id}
-                          onClick={() => { handleUpdateField({ lead_type: "member", lead_id: m.user_id }); setLeadOpen(false); }}
-                          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-body hover:bg-accent transition-colors"
-                        >
-                          <ActorAvatar actorType="member" actorId={m.user_id} size="sm" />
-                          <span>{m.name}</span>
-                        </button>
-                      ))}
-                    </>
-                  )}
-                  {filteredAgents.length > 0 && (
-                    <>
-                      <div className="px-2 pt-2 pb-1 text-caption font-medium text-muted-foreground uppercase tracking-wider">{t(($) => $.lead.agents_group)}</div>
-                      {filteredAgents.map((a) => (
-                        <button
-                          type="button"
-                          key={a.id}
-                          onClick={() => { handleUpdateField({ lead_type: "agent", lead_id: a.id }); setLeadOpen(false); }}
-                          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-body hover:bg-accent transition-colors"
-                        >
-                          <ActorAvatar actorType="agent" actorId={a.id} size="sm" showStatusDot />
-                          <span>{a.name}</span>
-                        </button>
-                      ))}
-                    </>
-                  )}
-                  {filteredMembers.length === 0 && filteredAgents.length === 0 && leadFilter && (
-                    <div className="px-2 py-3 text-center text-body text-muted-foreground">{t(($) => $.lead.no_results)}</div>
-                  )}
-                </div>
-              </PopoverContent>
-            </Popover>
-          </PropRow>
-          <PropRow label={t(($) => $.detail.prop_start_date)}>
-            <ProjectStartDatePicker startDate={project.start_date} onUpdate={handleUpdateField} />
-          </PropRow>
-          <PropRow label={t(($) => $.detail.prop_due_date)}>
-            <ProjectDueDatePicker dueDate={project.due_date} onUpdate={handleUpdateField} />
-          </PropRow>
-          <ProjectWorkflowPropRow project={project} />
-        </div>}
-      </div>
-
-      {/* Runtime */}
-      <div>
-        <button
-          type="button"
-          className={`flex w-full items-center gap-1 rounded-md px-2 py-1 text-caption font-medium transition-colors mb-2 hover:bg-accent/70 ${runtimeOpen ? "" : "text-muted-foreground hover:text-foreground"}`}
-          onClick={() => setRuntimeOpen(!runtimeOpen)}
-        >
-          {t(($) => $.detail.section_runtime)}
-          <ChevronRight className={`!size-3 shrink-0 stroke-[2.5] text-muted-foreground transition-transform ${runtimeOpen ? "rotate-90" : ""}`} />
-        </button>
-        {runtimeOpen && (
-          <div className="pl-2 space-y-2">
-            <label className="flex cursor-pointer items-center justify-between gap-2 rounded-md px-2 -mx-2 py-1.5 hover:bg-accent/50 transition-colors">
-              <span className="text-caption">{t(($) => $.detail.agent_workdir_toggle)}</span>
-              <Switch
-                checked={enableAgentWorkdirOpen}
-                onCheckedChange={handleToggleAgentWorkdir}
-                size="sm"
-                aria-label={t(($) => $.detail.agent_workdir_toggle)}
-              />
-            </label>
-            {enableAgentWorkdirOpen && (
-              <div className="space-y-1">
-                <Input
-                  value={agentWorkdirDraft}
-                  onChange={(e) => {
-                    setAgentWorkdirDraft(e.target.value);
-                    if (agentWorkdirError) setAgentWorkdirError(null);
-                  }}
-                  onBlur={handleAgentWorkdirBlur}
-                  placeholder={t(($) => $.detail.agent_workdir_placeholder)}
-                  aria-invalid={!!agentWorkdirError}
-                  aria-label={t(($) => $.detail.agent_workdir_placeholder)}
-                />
-                {agentWorkdirError && (
-                  <p className="text-caption text-destructive">{agentWorkdirError}</p>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Progress */}
-      {issueMetrics.totalCount > 0 && (() => {
-        const pct = Math.round((issueMetrics.completedCount / issueMetrics.totalCount) * 100);
-        return (
-          <div>
-            <button
-              type="button"
-              className={`flex w-full items-center gap-1 rounded-md px-2 py-1 text-caption font-medium transition-colors mb-2 hover:bg-accent/70 ${progressOpen ? "" : "text-muted-foreground hover:text-foreground"}`}
-              onClick={() => setProgressOpen(!progressOpen)}
-            >
-              {t(($) => $.detail.section_progress)}
-              <ChevronRight className={`!size-3 shrink-0 stroke-[2.5] text-muted-foreground transition-transform ${progressOpen ? "rotate-90" : ""}`} />
-            </button>
-            {progressOpen && <div className="pl-2 flex items-center gap-3">
-              <div className="relative h-2 flex-1 rounded-full bg-muted overflow-hidden">
-                <div
-                  className="absolute inset-y-0 left-0 rounded-full bg-emerald-500 transition-all"
-                  style={{ width: `${pct}%` }}
-                />
-              </div>
-              <span className="text-caption text-muted-foreground tabular-nums shrink-0">
-                {issueMetrics.completedCount}/{issueMetrics.totalCount}
-              </span>
-            </div>}
-          </div>
-        );
-      })()}
-
-      {/* Description */}
-      <div>
-        <button
-          type="button"
-          className={`flex w-full items-center gap-1 rounded-md px-2 py-1 text-caption font-medium transition-colors mb-2 hover:bg-accent/70 ${descriptionOpen ? "" : "text-muted-foreground hover:text-foreground"}`}
-          onClick={() => setDescriptionOpen(!descriptionOpen)}
-        >
-          {t(($) => $.detail.section_description)}
-          <ChevronRight className={`!size-3 shrink-0 stroke-[2.5] text-muted-foreground transition-transform ${descriptionOpen ? "rotate-90" : ""}`} />
-        </button>
-        {descriptionOpen && <div className="pl-2">
-          <ContentEditor
-            ref={descEditorRef}
-            key={projectId}
-            value={project.description || ""}
-            placeholder={t(($) => $.detail.description_placeholder)}
-            onUpdate={(md) => handleUpdateField({ description: md || null })}
-            debounceMs={1500}
-          />
-          <p className="mt-1 px-2 text-caption text-muted-foreground">
-            {t(($) => $.detail.description_hint)}
-          </p>
-        </div>}
-      </div>
-
-      {/* Resources */}
-      <ProjectResourcesSection projectId={projectId} />
+      <ProjectPropertiesPanel
+        project={project}
+        onUpdate={handleUpdateField}
+        onStatusChange={handleStatusChange}
+        onOpenWorkflow={openWorkflowSheet}
+        readOnly={guest}
+      />
+      <ProjectInsights
+        project={project}
+        readOnly={guest}
+        onFilter={showFilteredIssues}
+        onShowActivity={() => {
+          setMobileSidebarOpen(false);
+          handleTabChange("activity");
+        }}
+      />
     </div>
   );
 

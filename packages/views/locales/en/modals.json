@@ -170,7 +170,7 @@
   },
   "merge_request_diff": {
     "title": "{{title}}",
-    "loading": "Loading diff…",
+    "loading": "Loading diff...",
     "empty": "No changed files in this merge request.",
     "error_409": "This merge request predates connection tracking — reconnect or wait for the next webhook sync.",
     "error_400": "Diff viewing is GitLab-only for now.",

@@ -54,7 +54,7 @@ func TestCheckoutReusesLegacyCache(t *testing.T) {
 				IsolatedGitMetadata: isolated,
 			}
 			// Seed the checkout as an older daemon would, before migration exists.
-			path := filepath.Join(params.WorkDir, repoNameFromURL(source))
+			path := filepath.Join(params.WorkDir, RepoNameFromURL(source))
 			branch := "agent/test/" + taskKey(params.TaskID)
 			baseRef := getRemoteDefaultBranch(legacyPath)
 			result := &WorktreeResult{Path: path, BranchName: branch}

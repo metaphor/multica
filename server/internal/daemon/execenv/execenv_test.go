@@ -7005,7 +7005,6 @@ func TestPreCheckoutChatWorkflowDisabled(t *testing.T) {
 // per-task wrapper pins workspace to env.Cwd (not env.WorkDir) when custom
 // workdir is enabled.
 func TestPrepareOpenclawConfigUsesCwdWhenWorkdirEnabled(t *testing.T) {
-	t.Parallel()
 
 	// Install a stub that provides a valid active config path and agents list.
 	stub := installOpenclawStub(t, map[string]openclawResponse{
@@ -7060,7 +7059,6 @@ func TestPrepareOpenclawConfigUsesCwdWhenWorkdirEnabled(t *testing.T) {
 // per-task wrapper pins workspace to WorkDir (which equals Cwd) when custom
 // workdir is disabled.
 func TestPrepareOpenclawConfigUsesWorkDirWhenDisabled(t *testing.T) {
-	t.Parallel()
 
 	stub := installOpenclawStub(t, map[string]openclawResponse{
 		"config file":                   {stdout: filepath.Join(os.TempDir(), ".openclaw", "openclaw.json")},
