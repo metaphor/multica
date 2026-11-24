@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { useModalStore } from "@multica/core/modals";
 import { CreateIssueDialog } from "./create-issue-dialog";
 import { CreateProjectModal } from "./create-project";
@@ -9,18 +9,66 @@ import { FeedbackModal } from "./feedback";
 import { SetParentIssueModal } from "./set-parent-issue";
 import { MarkDuplicateIssueModal } from "./mark-duplicate-issue";
 import { AddChildIssueModal } from "./add-child-issue";
+import { AddBlockerIssueModal } from "./add-blocker-issue";
 import { AddProjectIssueModal } from "./add-project-issue";
 import { RenameIssueModal } from "./rename-issue";
+import { RenameProjectModal } from "./rename-project";
+import { getProjectFoldersExtension } from "../extensions";
 import { DeleteIssueConfirmModal } from "./delete-issue-confirm";
 import { MergeRequestDiffModal } from "../issues/components/merge-request-diff-modal";
 import { RunConfirmModal } from "./run-confirm";
 import { WorkflowHandoffModal } from "./workflow-handoff";
-import { IssueLimitUpgradeDialog } from "./issue-limit-upgrade-dialog";
+import { LimitRecoveryDialog } from "./limit-recovery-dialog";
+
+type ActiveModalName = NonNullable<ReturnType<typeof useModalStore.getState>["modal"]>;
+
+type RetainedModal = {
+  modal: ActiveModalName;
+  data: Record<string, unknown> | null;
+  sessionKey: number;
+  closing: boolean;
+};
 
 export function ModalRegistry() {
   const modal = useModalStore((s) => s.modal);
   const data = useModalStore((s) => s.data);
   const close = useModalStore((s) => s.close);
+  const [retained, setRetained] = useState<RetainedModal | null>(null);
+
+  if (modal !== null) {
+    if (
+      retained === null ||
+      retained.closing ||
+      retained.modal !== modal ||
+      retained.data !== data
+    ) {
+      setRetained({
+        modal,
+        data,
+        sessionKey: (retained?.sessionKey ?? 0) + 1,
+        closing: false,
+      });
+    }
+  } else if (retained !== null && !retained.closing) {
+    setRetained({ ...retained, closing: true });
+  }
+
+  const snapshot: RetainedModal | null =
+    modal !== null
+      ? retained !== null &&
+        !retained.closing &&
+        retained.modal === modal &&
+        retained.data === data
+        ? retained
+        : {
+            modal,
+            data,
+            sessionKey: (retained?.sessionKey ?? 0) + 1,
+            closing: false,
+          }
+      : retained;
+
+  const isOpen = modal !== null;
 
   let activeModal: ReactNode = null;
   switch (modal) {
@@ -82,10 +130,13 @@ export function ModalRegistry() {
       break;
   }
 
+  const FoldersHost = getProjectFoldersExtension()?.Host;
+
   return (
     <>
       {activeModal}
-      <IssueLimitUpgradeDialog />
+      <LimitRecoveryDialog />
+      {FoldersHost && <FoldersHost />}
     </>
   );
 }

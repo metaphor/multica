@@ -375,7 +375,7 @@ export function WorkflowEditorPage({
   ];
   const current = listed.find((c) => c.id === selectedId) ?? listed[1]!;
   const nextOf = (column: DraftColumn, h: Handoff | undefined) =>
-    h?.next_status_key ?? workflowNextStatus(draftFlow, columnKey(column));
+    h?.next_status_key ?? workflowNextStatus(draftFlow, columnKey(column), catalog.categoryOf);
   const card = (column: DraftColumn) => {
     const key = "status_key" in column ? column.status_key : null;
     const optional = key === "backlog" || key === "blocked";
@@ -590,7 +590,7 @@ export function WorkflowEditorPage({
           off={isOff(current)}
           handoff={draft.handoffs[current.id]}
           flow={flow}
-          defaultNextLabel={columnLabel(workflowNextStatus(draftFlow, columnKey(current)))}
+          defaultNextLabel={columnLabel(workflowNextStatus(draftFlow, columnKey(current), catalog.categoryOf))}
           canEdit={canEdit}
           statusOptions={middleIds.has(current.id) ? addable : null}
           onReplaceStatus={(key) => replaceStatus(current, key)}
@@ -765,7 +765,7 @@ function StepCard({
               <span className="shrink-0">{t(($) => $.workflows.editor.card_hand_to)}</span>
               {actor && <ActorAvatar actorType={actor.type} actorId={actor.id} size="xs" profileLink={false} />}
               <span className="min-w-0 truncate text-foreground">{actor ? getActorName(actor.type, actor.id) : who}</span>
-              {handoff?.handler.type === "agent" && nextLabel && (
+              {(handoff?.handler.type === "agent" || handoff?.handler.type === "squad") && nextLabel && (
                 <span className="shrink-0 truncate">· {t(($) => $.workflows.editor.card_then, { status: nextLabel })}</span>
               )}
             </>

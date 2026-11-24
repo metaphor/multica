@@ -15,7 +15,6 @@ import {
   MoreHorizontal,
   Unlink,
   GitPullRequest,
-  GitPullRequestArrow,
   GitPullRequestClosed,
   GitPullRequestDraft,
   TriangleAlert,
@@ -36,7 +35,6 @@ import { useWorkspaceId } from "@multica/core/hooks";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import type {
   GitHubPullRequest,
-  GitHubPullRequestState,
   PRAutoComplete,
 } from "@multica/core/types";
 import { IconButton } from "@multica/ui/components/common/icon-button";
@@ -54,6 +52,7 @@ import { useModalStore } from "@multica/core/modals";
 import { useT, useTimeAgo } from "../../i18n";
 import { useStatusLabel } from "../utils/status-label";
 import { StatusIcon } from "./status-icon";
+import { PULL_REQUEST_STATE_ICON } from "./pull-request-chips";
 
 type IssuesT = ReturnType<typeof useT<"issues">>["t"];
 
@@ -61,16 +60,6 @@ type IssuesT = ReturnType<typeof useT<"issues">>["t"];
 // Keep the existing sidebar density: show the first 3 PR rows inline, then
 // collapse the rest once the section reaches 4 rows.
 const PR_LIMIT_BEFORE_COLLAPSE = 4;
-
-const STATE_ICON: Record<
-  GitHubPullRequestState,
-  { icon: React.ComponentType<{ className?: string }>; className: string }
-> = {
-  open: { icon: GitPullRequestArrow, className: "text-emerald-600 dark:text-emerald-400" },
-  draft: { icon: GitPullRequestDraft, className: "text-muted-foreground" },
-  merged: { icon: GitMerge, className: "text-violet-600 dark:text-violet-400" },
-  closed: { icon: GitPullRequestClosed, className: "text-rose-600 dark:text-rose-400" },
-};
 
 export function PullRequestList({
   issueId,
@@ -111,6 +100,11 @@ export function PullRequestList({
   // The repo name only tells rows apart when the PRs span repos; otherwise it
   // spends the width the diff needs. The row tooltip keeps owner/repo#number.
   const showRepo = new Set(prs.map((pr) => `${pr.repo_owner}/${pr.repo_name}`)).size > 1;
+  // A lone PR the merge is waiting on carries the outcome as its own last line.
+  const inlineWaiting =
+    autoComplete?.state === "waiting" &&
+    prs.length === 1 &&
+    autoComplete.pull_request_ids.includes(prs[0]!.id);
 
   return (
     <div className="space-y-1">
@@ -135,7 +129,7 @@ export function PullRequestList({
           </button>
         </div>
       ) : null}
-      {autoComplete ? (
+      {autoComplete && !inlineWaiting ? (
         <AutoCompleteLine issueId={issueId} prs={prs} autoComplete={autoComplete} />
       ) : null}
     </div>
@@ -259,6 +253,29 @@ function PullRequestRowMenu({ pr, actions }: { pr: GitHubPullRequest; actions: R
 // its own word order and the status renders as a chip, not plain text.
 const STATUS_SLOT = "\u2063status\u2063";
 
+function TargetSentence({ sentence, target }: { sentence: string; target: string }) {
+  const wsId = useWorkspaceId();
+  const catalog = useIssueStatuses(wsId);
+  const statusLabel = useStatusLabel(wsId);
+  const [before, after = ""] = sentence.split(STATUS_SLOT);
+  return (
+    <span>
+      {before}
+      <span className="inline-flex items-center gap-1 whitespace-nowrap align-middle font-medium text-foreground">
+        <StatusIcon
+          status={target}
+          category={catalog.categoryOf(target)}
+          color={catalog.colorOf(target)}
+          icon={catalog.iconOf(target)}
+          className="size-3"
+        />
+        {statusLabel(target)}
+      </span>
+      {after}
+    </span>
+  );
+}
+
 /**
  * One line under the PR list saying what "every linked PR merged → move the
  * issue to the workspace's target status" will do for this issue, straight
@@ -276,9 +293,6 @@ function AutoCompleteLine({
   autoComplete: PRAutoComplete;
 }) {
   const { t } = useT("issues");
-  const wsId = useWorkspaceId();
-  const catalog = useIssueStatuses(wsId);
-  const statusLabel = useStatusLabel(wsId);
   const unlink = useUnlinkPullRequest(issueId, autoComplete);
   const setAutoComplete = useSetIssuePRAutoComplete(issueId);
   const named = autoComplete.pull_request_ids
@@ -295,25 +309,7 @@ function AutoCompleteLine({
     </button>
   );
   const target = mergeTarget(autoComplete);
-  const withTarget = (sentence: string) => {
-    const [before, after = ""] = sentence.split(STATUS_SLOT);
-    return (
-      <span>
-        {before}
-        <span className="inline-flex items-center gap-1 whitespace-nowrap align-middle font-medium text-foreground">
-          <StatusIcon
-            status={target}
-            category={catalog.categoryOf(target)}
-            color={catalog.colorOf(target)}
-            icon={catalog.iconOf(target)}
-            className="size-3"
-          />
-          {statusLabel(target)}
-        </span>
-        {after}
-      </span>
-    );
-  };
+  const withTarget = (sentence: string) => <TargetSentence sentence={sentence} target={target} />;
 
   let icon: React.ReactNode;
   let body: React.ReactNode;
@@ -358,7 +354,7 @@ function AutoCompleteLine({
   return (
     <p
       data-testid="pr-auto-complete-line"
-      className="mx-2 mt-1 flex items-start gap-1.5 border-t border-border py-2 text-caption text-muted-foreground [&>svg]:mt-px [&>svg]:size-3.5 [&>svg]:shrink-0"
+      className="flex items-start gap-2.5 px-2 py-2 text-caption text-muted-foreground [&>svg]:mt-px [&>svg]:size-3.5 [&>svg]:shrink-0"
     >
       {icon}
       <span className="min-w-0">{body}</span>
@@ -373,12 +369,13 @@ const PROBLEM_LIMIT = 3;
 type VerdictTone = "red" | "amber" | "green" | "violet" | "muted";
 
 // Pills reuse the state icons' palette. Their text sits one shade darker so
-// 11px copy on a 10% tint keeps AA contrast.
+// 11px copy on a 10% tint keeps AA contrast. Merged is a pull request state,
+// so it follows the theme's --pr-merged.
 const TONE_CLASS: Record<VerdictTone, string> = {
   red: "bg-rose-600/10 text-rose-700 dark:bg-rose-400/15 dark:text-rose-400",
   amber: "bg-amber-600/10 text-amber-700 dark:bg-amber-400/15 dark:text-amber-400",
   green: "bg-emerald-600/10 text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-400",
-  violet: "bg-violet-600/10 text-violet-700 dark:bg-violet-400/15 dark:text-violet-400",
+  violet: "bg-pr-merged/10 text-pr-merged-text dark:bg-pr-merged-dark/15 dark:text-pr-merged-dark",
   muted: "bg-muted text-muted-foreground",
 };
 
@@ -394,9 +391,9 @@ interface VerdictPillConfig {
 
 /**
  * One PR in the sidebar: the title, then `#number` (`repo#number` when the
- * list spans repos) with the diff size and one verdict pill aligned right, so
- * several PRs scan as a column. A failed PR also lists what failed. Owner,
- * author, the full title and exact counts live in the row's tooltip.
+ * list spans repos) with one verdict pill aligned right, so several PRs scan
+ * as a column. A failed PR also lists what failed. Owner, author, the full
+ * title and the diff size live in the row's tooltip.
  */
 function PullRequestRow({
   pr,
@@ -414,7 +411,7 @@ function PullRequestRow({
 }) {
   const { t } = useT("issues");
   const timeAgo = useTimeAgo();
-  const cfg = STATE_ICON[pr.state] ?? { icon: GitPullRequest, className: "" };
+  const cfg = PULL_REQUEST_STATE_ICON[pr.state] ?? { icon: GitPullRequest, className: "" };
   const StateIcon = cfg.icon;
   const verdict = derivePullRequestVerdict(pr);
   const pill = getVerdictPill(verdict, t);
@@ -483,12 +480,27 @@ function PullRequestRow({
               {stripIssueKeyFromTitle(pr.title, identifier)}
             </p>
             <div className="mt-1 flex items-center gap-2">
-              {/* The number and the pill never yield. Everything after the dot
-                  is one unit: short of room, it wraps whole onto the clipped
-                  second line instead of being cut mid-number (+312 → +31). */}
+              {/* The number, the diff and the pill never yield; short of room,
+                  only the repo name truncates. The trailing meta is one unit:
+                  it wraps whole onto the clipped second line instead of being
+                  cut mid-word. */}
               <p className="flex h-lh min-w-0 flex-1 flex-wrap items-center gap-x-1.5 overflow-hidden whitespace-nowrap text-caption text-muted-foreground tabular-nums">
-                <span className="min-w-0 truncate">
-                  {showRepo ? pr.repo_name : null}#{pr.number}
+                <span className="inline-flex min-w-0 items-center gap-1.5">
+                  <span className="inline-flex min-w-0 items-center">
+                    {showRepo ? <span className="min-w-0 truncate">{pr.repo_name}</span> : null}
+                    <span className="shrink-0">#{pr.number}</span>
+                  </span>
+                  {showStats ? (
+                    <span data-testid="pull-request-diff" className="inline-flex shrink-0 items-center gap-1.5">
+                      <span aria-hidden="true" className="text-faint-foreground">
+                        ·
+                      </span>
+                      <span className="inline-flex items-center gap-1">
+                        <span className="text-success">+{formatPullRequestDiffCount(pr.additions ?? 0)}</span>
+                        <span className="text-destructive">−{formatPullRequestDiffCount(pr.deletions ?? 0)}</span>
+                      </span>
+                    </span>
+                  ) : null}
                 </span>
                 <ProviderPill provider={pr.provider} />
                 {meta ? (
@@ -503,6 +515,11 @@ function PullRequestRow({
               {pill ? <VerdictPill pill={pill} stale={stale} title={staleTitle} /> : null}
             </div>
             {verdict.kind === "failed" ? <PullRequestProblems verdict={verdict} stale={stale} /> : null}
+            {onMergeTarget ? (
+              <p data-testid="pr-merge-target" className="mt-1 truncate text-caption text-muted-foreground">
+                <TargetSentence sentence={t(($) => $.pr_automation.on_merge_to, { status: STATUS_SLOT })} target={onMergeTarget} />
+              </p>
+            ) : null}
           </div>
         </TooltipTrigger>
         <TooltipContent side="left" align="start" className="flex-col items-start gap-0.5">
@@ -542,21 +559,30 @@ function PullRequestRow({
 /**
  * One PR on a single line — state icon, `#number`, verdict pill — for
  * surfaces with no room for PullRequestRow, such as the issue hover card.
- * Not a link: the hover card that hosts it is read-only.
+ * A plain link to the PR on GitHub, like PullRequestRow, so the browser owns
+ * Enter, modifier and middle clicks. The hover card stops click bubbling, so
+ * opening the PR never also follows the mention it hangs off.
  */
 export function PullRequestInlineSummary({ pr }: { pr: GitHubPullRequest }) {
   const { t } = useT("issues");
-  const cfg = STATE_ICON[pr.state] ?? { icon: GitPullRequest, className: "" };
+  const cfg = PULL_REQUEST_STATE_ICON[pr.state] ?? { icon: GitPullRequest, className: "" };
   const StateIcon = cfg.icon;
   const pill = getVerdictPill(derivePullRequestVerdict(pr), t);
   const isTerminal = pr.state === "merged" || pr.state === "closed";
   const stale = !isTerminal && pr.snapshot_stale === true;
   return (
-    <span className="flex min-w-0 items-center gap-1.5" title={pr.title}>
+    <a
+      data-testid="pull-request-inline-summary"
+      href={pr.html_url}
+      target="_blank"
+      rel="noreferrer noopener"
+      title={pr.title}
+      className="-mx-1 flex min-w-0 items-center gap-1.5 rounded-sm px-1 transition-colors hover:bg-accent/50 focus-visible:outline-2 focus-visible:outline-ring"
+    >
       <StateIcon className={cn("size-3.5 shrink-0", cfg.className)} />
       <span className="shrink-0 font-medium tabular-nums">{prLabel(pr)}</span>
       {pill ? <VerdictPill pill={pill} stale={stale} inline /> : null}
-    </span>
+    </a>
   );
 }
 

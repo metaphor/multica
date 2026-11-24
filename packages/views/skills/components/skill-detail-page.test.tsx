@@ -106,8 +106,8 @@ vi.mock("../../rich-content", () => ({
     <div data-testid="preview">{content}</div>
   ),
 }));
-vi.mock("../../labels/resource-label-picker", () => ({
-  ResourceLabelPicker: () => <div data-testid="labels" />,
+vi.mock("../../issues/components/pickers/label-picker", () => ({
+  LabelPicker: () => <div data-testid="labels" />,
 }));
 vi.mock("./skill-list-actions", () => ({
   AddToAgentDialog: ({ open }: { open: boolean }) =>
@@ -695,7 +695,7 @@ describe("SkillDetailPage draft baseline (MUL-5645)", () => {
     renderPage();
     fireEvent.change(await openDescription(), { target: { value: "edited" } });
     fireEvent.click(await screen.findByRole("button", { name: "Discard" }));
-    expect(screen.queryByText(/^Changed:/)).toBeNull();
+    await vi.waitFor(() => expect(screen.queryByText(/^Changed:/)).toBeNull());
   });
 
   it("pulls a remote edit in silently while the draft is untouched", async () => {
