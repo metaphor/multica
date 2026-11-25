@@ -484,10 +484,13 @@ function PullRequestRow({
               {stripIssueKeyFromTitle(pr.title, identifier)}
             </p>
             <div className="mt-1 flex items-center gap-2">
-              {/* The number, the diff and the pill never yield; short of room,
-                  only the repo name truncates. The trailing meta is one unit:
-                  it wraps whole onto the clipped second line instead of being
-                  cut mid-word. */}
+              {/* The number and the pill never yield. The diff and the trailing
+                  meta are each one unit: short of room, they wrap whole onto
+                  the clipped second line (the tooltip keeps them) instead of
+                  being cut mid-word or drawn over the number. The repo name
+                  takes no room of its own (zero basis), only what is left
+                  over, so it truncates before the diff wraps; its negative
+                  margin cancels the gap so it reads `repo#number`. */}
               <p className="flex h-lh min-w-0 flex-1 flex-wrap items-center gap-x-1.5 overflow-hidden whitespace-nowrap text-caption text-muted-foreground tabular-nums">
                 <span className="inline-flex min-w-0 items-center gap-1.5">
                   <span className="inline-flex min-w-0 items-center">
