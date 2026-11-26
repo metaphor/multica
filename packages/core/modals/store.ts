@@ -20,6 +20,7 @@ type ModalType =
   | "issue-run-confirm"
   | "merge-request-diff"
   | "issue-workflow-handoff"
+  | "keyboard-shortcuts"
   | null;
 
 // Each reason is a Cloud-enforced limit whose recovery dialog offers billing
